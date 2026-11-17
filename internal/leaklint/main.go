@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -87,7 +88,8 @@ func run(list string, ci bool) ([]hit, error) {
 		return nil, err
 	}
 	var hits []hit
-	for _, name := range bytes.Split(bytes.TrimSuffix(names, []byte{0}), []byte{0}) {
+	for i, name := range bytes.Split(bytes.TrimSuffix(names, []byte{0}), []byte{0}) {
+		hits = append(hits, scan(fmt.Sprintf("tracked path %d of git ls-files", i+1), name, terms)...)
 		data, err := os.ReadFile(string(name))
 		if err != nil || bytes.IndexByte(data, 0) >= 0 {
 			continue
@@ -114,8 +116,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "leaklint:", err)
 		os.Exit(1)
 	}
+	terms := parseTerms(os.Getenv("LEAK_DENYLIST"))
 	for _, h := range hits {
-		fmt.Printf("%s:%d: denied term %q\n", h.where, h.line, h.term)
+		fmt.Printf("%s:%d: denied term #%d\n", h.where, h.line, slices.Index(terms, h.term)+1)
 	}
 	if len(hits) > 0 {
 		os.Exit(1)
