@@ -1,0 +1,9 @@
+# Time budgets for go test, read by internal/testtime.
+#   leaf SECONDS                  a test that has no subtests
+#   package PATH|default SECONDS  wall time of one package; PATH@JOB sets it for one job
+#   test PATH NAME SECONDS        tests of PATH whose name starts with NAME
+# A test with subtests is not checked, because a parallel parent reports the time of the whole package.
+# A change that makes a test or package slower raises its number in the same diff and states why.
+
+leaf 10
+package default 10
