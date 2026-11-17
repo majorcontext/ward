@@ -55,8 +55,6 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_MIRRORS` | JSON list of mirror entries (see Mirror, Configuration). Optional. |
 | `WARD_CLONE_DISK_BUDGET` | Bytes that the clone cache may use. Default 20 GiB. |
 | `WARD_CLONE_IDLE_TTL` | Idle time after which a clone is deleted, as a Go duration. Default `168h`. |
-| `WARD_POLL_INTERVAL` | Interval of the event poll and of the subscription check. Default `30s`. |
-| `WARD_VERIFY_INTERVAL` | Interval of the periodic Reconcile pass. Default `1h`. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional. Enables OTLP trace export. |
 
 The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. A later feature that lands through motte adds the scope `merge`.
@@ -126,42 +124,61 @@ A ref that no pattern matches is never created, changed or deleted on the remote
 A trigger says that one ref of one repository may have changed. The mirror reads the real value of the ref when it acts on a trigger. It never trusts the `old` or `new` of an event. Three sources produce triggers, and they produce the same record, so a repeat is harmless:
 
 - Delivery: motte delivers each ref event to `POST /v1/hooks/motte` (see Ref events of motte).
-- Poll: ward reads `GET /v1/events?cursor=C` (see below) and makes a trigger of each event.
-- Reconcile: ward makes a trigger of each ref that needs one.
+- Catch-up: ward reads `GET /v1/events` and makes a trigger of each event. See Catch-up.
+- Reconcile: ward makes a trigger of each ref that needs one. See Reconcile.
 
-Delivery. At start, and when the subscription is missing, ward registers one subscription at motte with `POST /v1/subscriptions` and `{url, secret}`. It sets no `repo` filter, so one subscription serves every mirror. It keeps the subscription `id` and the `cursor` of the answer in the state store. A subscription of motte starts at the newest event, so it carries no history.
+ward has no timer that starts a poll or a check. The only waits are the retry backoff of a failed action (see Failure and backoff). Every read of motte or of the remote starts from an event, a start of the process, a stale rejection or an operator request.
+
+Delivery. At start, ward lists `GET /v1/subscriptions`. If no subscription has its receiver URL, ward registers one with `POST /v1/subscriptions` and `{url, secret}`. It sets no `repo` filter, so one subscription serves every mirror, and the events of a partition reach the receiver with no gap that a filter would make. It keeps the subscription `id` and the `cursor` of the answer in the state store. The code of motte seeds the cursors of a new subscription with the newest `seq` of every partition, so the subscription carries no history, and the first event that it delivers in a partition has the `seq` after that head.
 
 The receiver does these steps:
 
 1. Read the body, at most 64 KiB.
 2. Compute `sha256=` and the lowercase hex HMAC-SHA256 of the exact body under the secret, and compare it with `X-Motte-Signature` in constant time. A difference answers 401 `unauthorized` and stores nothing.
-3. Decode the event. If `repo` and `ref` match no mirror entry, answer 204 and store nothing. This is required: any other answer would stall the partition of motte.
-4. In one transaction of the state store, record the trigger and the pair `(partition, seq)` as the last event of that ref, then answer 204. If the transaction fails, answer 500.
+3. Decode the event, and compare its `seq` with `last_seq` of its partition in the state store (see State). A partition with no stored `last_seq` has no baseline: the first event sets it and starts no catch-up.
+   - `seq` equal to `last_seq` + 1: in order.
+   - `seq` at or below `last_seq`: a repeat. Answer 204 and store nothing.
+   - `seq` above `last_seq` + 1: a gap. Store the event as in step 4, and mark the partition for a catch-up (see Catch-up).
+4. In one transaction of the state store, set `last_seq` of the partition. If `repo` and `ref` match a mirror entry, also record the trigger. Then answer 204. If the transaction fails, answer 500. An event that matches no mirror entry still moves `last_seq`, and it answers 204. Any other answer would stall the partition of motte.
 
-The receiver answers before any git work. A slow push of one ref would otherwise block motte from delivering every other ref of its partition, because motte sends no later event of a partition before it gets a 2xx for the earlier one. Motte delivers at least once. A repeated `(partition, seq)` makes a trigger that already exists, so the receiver treats it as a repeat.
+The receiver answers before any git work. A slow push of one ref would otherwise block motte from delivering every other ref of its partition, because motte sends no later event of a partition before it gets a 2xx for the earlier one. motte delivers at least once and in `seq` order in a partition, so a gap shows that ward lost state, for example a restore of the state store from a backup, or that motte lost events.
 
-Poll. ward keeps a cursor of `GET /v1/events` in the state store. Every `WARD_POLL_INTERVAL` and at start, it reads pages with `limit=1000` until a page has no events. For each page, it records the triggers and the new cursor in one transaction. The cursor starts from the `cursor` of the subscription answer. Poll finds what delivery missed, such as events that arrived while ward was down.
+### Catch-up
 
-### Catch-up after downtime
+Catch-up reads `GET /v1/events?cursor=C&limit=1000` with an `operator` grant, from the `events_cursor` that the state store holds, and repeats until a page has no events. The cursor is opaque, so ward passes it unchanged. For each page, ward records the triggers of the events that match a mirror entry and the new `events_cursor` in one transaction. It records `last_seq` of each partition from the events that it reads, if that is higher than the stored value. After the last page, the stored cursor is the head of motte at that read.
 
-While ward is down, motte keeps its events (14 days by default, see Retention of motte) and retries delivery with a backoff of at most 5 minutes. On start, ward polls from its stored cursor, so it finds every event after its last durable position, whether or not a delivery arrives. It then works the triggers.
+Catch-up runs only in these cases:
 
-A poll that answers 410 `vcs_events_pruned` means the stored cursor fell below the retention floor, and the events between are lost. ward then does a full Reset:
+- At start, so ward finds the events that committed while it was down.
+- When the receiver finds a gap in a partition. A catch-up for a gap reads from the stored `events_cursor`, which is at or before the last event that ward recorded in every partition, so it passes the gap. It also reads events that delivery already recorded, and those make triggers that exist. A catch-up that is already running covers a new gap that it has not passed yet, and a gap that it has passed needs no second run.
+
+While ward is down, motte keeps its events (14 days by default, see Retention of motte) and retries delivery with a backoff of at most 5 minutes, so a short outage needs the catch-up of the start and little more.
+
+An answer of 410 `vcs_events_pruned` means that the stored cursor fell below the retention floor and the events between are lost. An answer of 400 `invalid_body` means that the cursor is ahead of the head of motte, which happens when motte lost state. In both cases ward does a full Reset:
 
 1. Delete its subscription at motte, if it has one, with `DELETE /v1/subscriptions/{id}`.
-2. Register a new subscription, and store its `id` and `cursor`.
+2. Register a new subscription, and store its `id` and `cursor` as the `events_cursor`. Clear `last_seq` of every partition.
 3. Reconcile every mirror.
 
-Step 2 comes before step 3, so an event that commits after the new subscription is not lost. A subscription whose own cursor fell below the floor stops delivering, and the log of motte names the error. ward finds this because its poll fails or because its subscription is missing from `GET /v1/subscriptions` at the periodic check (every `WARD_POLL_INTERVAL`), and it does the same Reset.
+Step 2 comes before step 3, so an event that commits after the new subscription is not lost. A subscription whose own cursor fell below the floor stops delivering, and the log of motte names the error. ward has no timer, so it finds this at the next start, because its subscription is missing or its catch-up fails, or because an operator sees `ward_mirror_lag_seconds` grow and calls `POST /v1/hooks/motte/reset`, which answers 202 and does a Reset. That route needs an `operator` token.
 
 ### Reconcile
 
-Reconcile makes a trigger of every ref that may differ. It reads the stored refs of motte with `GET /v1/vcs/refs` and keeps those that a pattern matches. It adds every ref of the mirror state that motte no longer lists, so the delete reaches the remote. It lists the remote refs with `git ls-remote`, and for each ref that a pattern matches and that motte does not list:
+Reconcile makes a trigger of every ref of a mirror that may differ. It reads the stored refs of motte with `GET /v1/vcs/refs`, which answers `{"refs":[{name, commit, generation}]}` for the repository of the grant, and it keeps the refs that a pattern matches. It adds every ref of the mirror state that motte no longer lists, so the delete reaches the remote. It lists the remote refs with `git ls-remote`, and for each ref that a pattern matches and that motte does not list:
 
 - With `prune_unknown` false, it leaves the ref alone.
 - With `prune_unknown` true, it makes a trigger for it, and the action deletes it.
 
-Reconcile runs at the first start of a mirror, after a Reset, and every `WARD_VERIFY_INTERVAL`. The periodic pass also repairs drift: it compares the remote tip of each ref with the `pushed` value in the state, and when they differ it makes a trigger. An operator can start a pass for one mirror with `POST /v1/mirrors/{name}/reconcile`.
+For each remote ref that a pattern matches, Reconcile also sets `pushed` in the state to the remote tip, or to empty when the ref is absent, so the next push compares with what the remote holds (see Action on a ref).
+
+Reconcile runs only in these cases:
+
+- At the first start of a mirror, that is when the state store has no record of its name.
+- After a Reset.
+- On the request of an operator: `POST /v1/mirrors/{name}/reconcile`.
+- For one ref, when a push to the remote is refused as stale because the remote moved outside ward (see Action on a ref).
+
+ward never compares the remote with the state on a timer. A change that someone makes on the remote outside ward stays until the next push of that ref, which the lease catches, or until an operator reconciles.
 
 ### State
 
@@ -169,10 +186,11 @@ The state store holds these records:
 
 | Record | Fields |
 |---|---|
-| Mirror | `name`, `subscription_id`, `events_cursor`. |
+| Service | `subscription_id`, `events_cursor`, and `last_seq` for each partition (0 to 63). |
+| Mirror | `name`, set when the first Reconcile of the mirror ends. |
 | Ref of a mirror | `mirror`, `ref` (stored name), `last_partition`, `last_seq`, `dirty` (boolean), `pushed` (commit or empty), `attempts`, `next_attempt`, `failure` (class, or empty), `failure_since`, `pushed_at`. |
 
-A trigger sets `dirty` on the ref record, and it updates `last_partition` and `last_seq` when its event is newer, by `seq` in one partition. A worker clears `dirty` only in the transaction that records a push result, and only when no trigger arrived after it read the ref. A trigger that arrives during a push therefore leaves the ref dirty, and the worker acts again. The state is small and holds no secret. The clone cache is not state: ward can lose all of it.
+A trigger sets `dirty` on the ref record, and it updates `last_partition` and `last_seq` of the ref record when its event is newer, by `seq` in one partition. A worker clears `dirty` only in the transaction that records a push result, and only when no trigger arrived after it read the ref. A trigger that arrives during a push therefore leaves the ref dirty, and the worker acts again. The state is small and holds no secret. The clone cache is not state: ward can lose all of it.
 
 ### Action on a ref
 
@@ -180,18 +198,19 @@ A worker acts on one dirty ref as follows:
 
 1. Read the ref from motte with `GET /v1/vcs/refs/{name...}` and a `read` grant (see Git access). A 404 `vcs_not_found` means the ref is deleted, and the target is deletion.
 2. If the target is a commit, make sure that the clone holds it. See Clone.
-3. Push to the remote. For a commit, push `+<commit>:<git ref name>`. The `+` forces the update: the mirror copies the ref exactly, and a non-fast-forward move is a normal case, because agents rewrite history. For a deletion, push `:<git ref name>`. A remote that says the ref does not exist is a success.
-4. On success, record `pushed` (the commit, or empty for a deletion) and `pushed_at`, clear `failure` and `attempts`, and clear `dirty` as State describes.
+3. Push to the remote with a lease on the value that ward last pushed (`--force-with-lease=<git ref name>:<pushed>`, and an empty `pushed` means that the ref must be absent). For a commit, push `+<commit>:<git ref name>`. The `+` forces the update: the mirror copies the ref exactly, and a non-fast-forward move is a normal case, because agents rewrite history. For a deletion, push `:<git ref name>`. A remote that says the ref does not exist is a success. A ref that has no `pushed` value yet and no Reconcile result is pushed with no lease.
+4. If the remote refuses the push as stale, the remote ref is not at `pushed`: someone moved it outside ward. ward then reconciles that ref. It reads the remote tip with `git ls-remote`, records it as `pushed`, and acts again at once with no wait. If the second push is refused as stale too, the failure is `remote_rejected` and the backoff applies.
+5. On success, record `pushed` (the commit, or empty for a deletion) and `pushed_at`, clear `failure` and `attempts`, and clear `dirty` as State describes.
 
 Every push is idempotent. Pushing a commit that the remote ref already holds changes nothing, and so does deleting a missing ref. A repeat of any step after a crash is therefore safe. This gives at-least-once pushes with no duplicate effect.
 
 Ordering. The workers hold one lock for each `(mirror, ref)`, so two pushes of one ref never run together. Because step 1 reads the current ref, a later push never installs an older commit than an earlier push, whatever the order of the triggers. The order of the events of one ref is also fixed by motte: they share a partition and follow commit order. The mirror needs no order between two refs and assumes none. A worker takes the dirty refs of one repository together and sends them in one `git push` with one refspec for each ref. Git reports the result of each ref, and the worker records each result alone. The push is not atomic.
 
-Read after write. A worker reads the ref from the metadata store of motte, so a read that follows an event shows that event or a later write. ward assumes this. If a read shows a ref older than the event that made the trigger, the push is a repeat of an older push, and the later event, which motte also delivers, corrects it.
+Read after write. A worker reads the ref from the metadata store of motte, so a read that follows an event shows that event or a later write. The route reads the row of the ref directly and answers 404 `vcs_not_found` when the row is absent. If a read shows a ref older than the event that made the trigger, the push is a repeat of an older push, and the later event, which motte also delivers, corrects it.
 
 ### Git access
 
-ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The run of git has a 10 minute limit. ward passes the grant as `Authorization: Bearer` through the environment of the git process (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS` with a helper that is the `ward` binary and reads the credential file.
+ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS` with a helper that is the `ward` binary and reads the credential file.
 
 The URL of the repository is `<WARD_MOTTE_URL>/git/<prefix>/<path>.git`, for the repository text `<prefix>:<path>`. For the calls to the control plane of motte (`/v1/events`, `/v1/subscriptions`) ward signs an `operator` grant with a life of 60 seconds. For `GET /v1/vcs/refs` it uses a `read` grant.
 
@@ -207,9 +226,11 @@ If a git run fails in a way that is not a network, motte or remote error, such a
 
 ### Disk use and pruning
 
+ward checks disk use only when a worker ends a push batch. It starts no timer for it.
+
 - A clone that has no dirty ref and no trigger for `WARD_CLONE_IDLE_TTL` is deleted. The next trigger fetches it again.
 - When the cache uses more than `WARD_CLONE_DISK_BUDGET`, ward deletes idle clones, least recently used first, until it fits. A clone that a worker uses, or that has a dirty ref, is never deleted. If the budget is still exceeded, ward keeps working, reports `ward_mirror_disk_over_budget` and logs it.
-- Every 24 hours ward runs `git gc --prune=now` on each clone, which frees the objects of deleted refs.
+- After a batch that deleted a ref, the worker runs `git gc --prune=now` on the clone, which frees the objects of the deleted ref.
 
 ### Failure and backoff
 
@@ -256,7 +277,7 @@ A ref is `synced` when it is not dirty, `pending` when it is dirty with no failu
 
 ### Tests
 
-Contract tests start ward against a real motte (the `testserver` package of motte) and a local bare git repository as the remote. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a poll after downtime, a Reset after a 410, and a remote that rejects a ref. Waits use the injected clock.
+Contract tests start ward against a real motte (the `testserver` package of motte) and a local bare git repository as the remote. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock.
 
 ## Planned work
 
