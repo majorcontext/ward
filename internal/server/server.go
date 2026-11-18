@@ -66,6 +66,7 @@ func New(d Deps) *Server {
 	s.mux.HandleFunc("GET /v1/mirrors/{name}", s.getMirror)
 	s.mux.HandleFunc("POST /v1/mirrors/{name}/reconcile", s.reconcile)
 	s.mux.HandleFunc("POST /v1/lands", s.land)
+	s.mux.HandleFunc("GET /v1/lands/{id}", s.getLand)
 	s.mux.HandleFunc("POST /v1/results", s.postResult)
 	return s
 }

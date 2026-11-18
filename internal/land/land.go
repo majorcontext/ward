@@ -1,23 +1,30 @@
-// Package land lands a motte branch on a ref with a merge grant.
+// Package land lands a motte branch on a ref through a per-ref queue. A ref only ever holds a tree that passed its checks.
 package land
 
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
 	"github.com/majorcontext/motte/grant"
+
+	"github.com/majorcontext/ward/internal/check"
 )
 
 const (
 	grantLife = 5 * time.Minute
 	maxWalk   = 10000
+	// MaxWait is the longest wait of a read of a land.
+	MaxWait = 60 * time.Second
 )
 
 // ErrNoMergeBase means that the first-parent chain of the branch never meets the first-parent chain of the target ref.
@@ -38,57 +45,183 @@ type Request struct {
 	DeleteBranch bool
 }
 
-// Result is the answer of motte, plus whether ward deleted the branch.
-type Result struct {
-	api.LandResponse
-	BranchDeleted bool
-}
-
-// Service lands branches.
+// Service accepts lands and runs the queue of each (repo, ref).
 type Service struct {
-	cfg Config
-	now func() time.Time
+	cfg    Config
+	store  Store
+	checks *check.Manager
+	clock  check.Clock
+	log    *slog.Logger
+
+	mu      sync.Mutex
+	ctx     context.Context
+	workers map[Key]chan struct{}
+	changed chan struct{}
+	wg      sync.WaitGroup
 }
 
-// New returns a service. A nil now means time.Now.
-func New(cfg Config, now func() time.Time) *Service {
-	if now == nil {
-		now = time.Now
+// New returns a service. A nil clock means the wall clock.
+func New(cfg Config, store Store, checks *check.Manager, clock check.Clock, log *slog.Logger) *Service {
+	if clock == nil {
+		clock = check.RealClock()
 	}
-	return &Service{cfg: cfg, now: now}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Service{cfg: cfg, store: store, checks: checks, clock: clock, log: log, workers: map[Key]chan struct{}{}, changed: make(chan struct{})}
+}
+
+// Start resumes every land that has not ended. The queues stop when ctx ends.
+func (s *Service) Start(ctx context.Context) error {
+	s.mu.Lock()
+	s.ctx = ctx
+	s.mu.Unlock()
+	keys, err := s.store.UnfinishedKeys(ctx)
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		s.kick(k)
+	}
+	return nil
+}
+
+// Wait returns when every queue has stopped. Call it after the context of Start ends.
+func (s *Service) Wait() { s.wg.Wait() }
+
+// Enqueue records a land in state queued and wakes the queue of its ref.
+func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return Land{}, err
+	}
+	l := Land{ID: hex.EncodeToString(b[:]), Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
+	if err := s.store.InsertLand(ctx, l); err != nil {
+		return Land{}, err
+	}
+	s.kick(Key{req.Repo, req.Ref})
+	return l, nil
+}
+
+// Get returns a land. With a positive wait it returns when the state of the land changes, or when the wait ends.
+func (s *Service) Get(ctx context.Context, id string, wait time.Duration) (Land, bool, error) {
+	changed := s.signal()
+	first, ok, err := s.store.Land(ctx, id)
+	if err != nil || !ok || wait <= 0 || first.State.Ended() {
+		return first, ok, err
+	}
+	timeout := s.clock.After(min(wait, MaxWait))
+	for {
+		select {
+		case <-s.done():
+			return s.reread(ctx, id)
+		case <-changed:
+			changed = s.signal()
+		case <-timeout:
+			return s.reread(ctx, id)
+		case <-ctx.Done():
+			return first, true, ctx.Err()
+		}
+		cur, ok, err := s.store.Land(ctx, id)
+		if err != nil || !ok || cur.State != first.State {
+			return cur, ok, err
+		}
+	}
+}
+
+func (s *Service) done() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ctx.Done()
+}
+
+func (s *Service) reread(ctx context.Context, id string) (Land, bool, error) {
+	return s.store.Land(ctx, id)
+}
+
+func (s *Service) signal() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
+}
+
+func (s *Service) notify() {
+	s.mu.Lock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.mu.Unlock()
+}
+
+// kick starts the worker of a key, or wakes it when it runs.
+func (s *Service) kick(k Key) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx == nil || s.ctx.Err() != nil {
+		return
+	}
+	if wake, ok := s.workers[k]; ok {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+		return
+	}
+	wake := make(chan struct{}, 1)
+	s.workers[k] = wake
+	s.wg.Add(1)
+	go s.work(k, wake)
+}
+
+// retire removes the worker of k unless a land arrived since it looked. It returns true when the worker must stop.
+func (s *Service) retire(k Key, wake chan struct{}) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-wake:
+		return false
+	default:
+		delete(s.workers, k)
+		return true
+	}
+}
+
+func (s *Service) work(k Key, wake chan struct{}) {
+	defer s.wg.Done()
+	for {
+		l, ok, err := s.store.NextLand(s.ctx, k)
+		switch {
+		case err != nil:
+			if s.ctx.Err() == nil {
+				s.log.Error("read the land queue", "repo", k.Repo, "ref", k.Ref, "error", err.Error())
+			}
+			s.retireNow(k)
+			return
+		case !ok:
+			if s.retire(k, wake) {
+				return
+			}
+			continue
+		}
+		if err := s.run(l); err != nil {
+			if s.ctx.Err() == nil {
+				s.log.Error("record the land", "land", l.ID, "error", err.Error())
+			}
+			s.retireNow(k)
+			return
+		}
+	}
+}
+
+func (s *Service) retireNow(k Key) {
+	s.mu.Lock()
+	delete(s.workers, k)
+	s.mu.Unlock()
 }
 
 func (s *Service) client(scope grant.Scope, repo string) *client.Client {
 	return client.New(s.cfg.URL, func(context.Context) (string, error) {
-		return grant.Signer{Kid: s.cfg.Kid, Key: s.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Subject: "ward", Exp: s.now().Add(grantLife).Unix()})
+		return grant.Signer{Kid: s.cfg.Kid, Key: s.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Subject: "ward", Exp: s.clock.Now().Add(grantLife).Unix()})
 	})
-}
-
-// Land lands the commits of Branch that Ref lacks. The base is the newest commit on the first-parent chain of the
-// tip of Ref that is also on the first-parent chain of the branch.
-func (s *Service) Land(ctx context.Context, req Request) (Result, error) {
-	reader, merger := s.client(grant.ScopeRead, req.Repo), s.client(grant.ScopeMerge, req.Repo)
-	branch, err := reader.Ref(ctx, req.Branch)
-	if err != nil {
-		return Result{}, err
-	}
-	tip, err := reader.Ref(ctx, req.Ref)
-	if err != nil {
-		return Result{}, err
-	}
-	base, err := mergeBase(ctx, reader, tip.Commit, branch.Commit)
-	if err != nil {
-		return Result{}, err
-	}
-	out, err := merger.Land(ctx, req.Repo, api.LandRequest{Ref: req.Ref, Base: base, Head: branch.Commit})
-	if err != nil {
-		return Result{}, err
-	}
-	res := Result{LandResponse: out}
-	if req.DeleteBranch {
-		res.BranchDeleted = merger.DeleteRef(ctx, req.Branch, branch.Generation) == nil
-	}
-	return res, nil
 }
 
 func firstParent(ctx context.Context, c *client.Client, sha string) (string, error) {

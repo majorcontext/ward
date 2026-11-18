@@ -33,6 +33,7 @@ import (
 	"github.com/majorcontext/motte/client"
 	"github.com/majorcontext/motte/testserver"
 
+	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
@@ -233,6 +234,9 @@ func (h *harness) git(args ...string) string { return gitIn(h.t, h.work, args...
 // commit adds a commit to the working clone and returns it.
 func (h *harness) commit(file, content string) string {
 	h.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(h.work, file)), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(h.work, file), []byte(content), 0o644); err != nil {
 		h.t.Fatal(err)
 	}
@@ -283,6 +287,8 @@ type wardOpts struct {
 	seedObjects string
 	// seedInflated lowers the inflated byte limit of one seed push.
 	seedInflated string
+	// runner is the runner of the repository of the harness.
+	runner *fakeRunner
 }
 
 type wardProc struct {
@@ -307,7 +313,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		o.refs = []string{"feature/*"}
 	}
 	seed := base64.StdEncoding.EncodeToString(h.motte.Operator.Key.Seed())
-	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land"}}})
+	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land", "check"}}})
 	dataDir, credFile := h.dataDir, h.credFile()
 	if o.relative {
 		dir, err := os.MkdirTemp(".", "rel-")
@@ -330,6 +336,11 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		githubAPI = o.app.srv.URL
 	}
 	entries, _ := json.Marshal([]mirror.Entry{entry})
+	runners := ""
+	if o.runner != nil {
+		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, URL: o.runner.srv.URL, SecretFile: h.writeFile("runner.secret", runnerSecret+"\n"), Env: runnerEnv}})
+		runners = string(raw)
+	}
 	motteURL := h.motte.URL
 	if o.proxied {
 		motteURL = h.proxy().URL
@@ -340,7 +351,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_DATA_DIR": dataDir, "WARD_MOTTE_URL": motteURL, "WARD_MOTTE_KID": "cp",
 		"WARD_MOTTE_KEY_FILE": h.writeFile("motte.key", seed), "WARD_PUBLIC_URL": "http://" + h.addr,
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
-		"WARD_MIRRORS": string(entries), "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
+		"WARD_MIRRORS": string(entries), "WARD_RUNNERS": runners, "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
 		"WARD_SEED_MAX_OBJECTS": o.seedObjects, "WARD_SEED_MAX_INFLATED_BYTES": o.seedInflated,
 	}
 	adjust := func(c *config.Config) {
@@ -631,4 +642,16 @@ func (h *harness) holdMotte() (<-chan struct{}, func()) {
 	g := &gate{entered: make(chan struct{}, 8), release: make(chan struct{})}
 	h.motteGate.Store(g)
 	return g.entered, func() { h.motteGate.Store(nil); close(g.release) }
+}
+
+// hasTimer reports whether a timer is waiting for d from the fake now.
+func (c *fakeClock) hasTimer(d time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, t := range c.timers {
+		if t.at.Equal(c.now.Add(d)) {
+			return true
+		}
+	}
+	return false
 }
