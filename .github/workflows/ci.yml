@@ -25,6 +25,23 @@ jobs:
           go test -race -count=1 -json ./... | go run ./internal/testtime -title Unit -job go
       - run: test -z "$(gofmt -l .)"
 
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: helm lint charts/ward -f charts/ward/ci/values.yaml
+      - run: helm lint charts/ward -f charts/ward/ci/no-mirrors.yaml
+      - run: helm template ward charts/ward -f charts/ward/ci/values.yaml > /dev/null
+      - run: helm template ward charts/ward -f charts/ward/ci/no-mirrors.yaml > /dev/null
+      - run: |
+          helm template ward charts/ward -f charts/ward/ci/values.yaml | grep -A1 WARD_MIRRORS | grep -q github_app
+      - run: |
+          ! helm template ward charts/ward -f charts/ward/ci/no-mirrors.yaml --set 'mirrors[0].name=m' --set 'mirrors[0].repo=native:r' --set 'mirrors[0].remote=https://h/r.git' --set 'mirrors[0].refs={main}' --set publicUrl=http://w --set hookSecret.name=h
+      - run: |
+          ! helm template ward charts/ward -f charts/ward/ci/values.yaml --set trustedKeysSecret.name=x
+
   leak:
     # A fork pull request gets no secrets, so the job cannot run for it.
     if: github.event.pull_request.head.repo.fork != true

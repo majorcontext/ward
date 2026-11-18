@@ -1,0 +1,9 @@
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+motte:
+  url: http://motte.example
+  kid: ward
+  keySecret:
+    name: ward-motte-key
+trustedKeysSecret:
+  name: ward-callers

@@ -1,0 +1,82 @@
+# image is the ward image. Set digest or tag; a digest wins.
+image:
+  repository: ghcr.io/majorcontext/ward
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  # name defaults to the release name.
+  name: ""
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+# listenPort is the container port. It sets WARD_LISTEN.
+listenPort: 8080
+
+# publicUrl is the base URL under which motte reaches ward. Required when mirrors is not empty.
+publicUrl: ""
+
+# motte says how ward reaches motte. keySecret names the existing Secret that holds the base64 Ed25519 private key
+# that signs the grants. The chart creates no Secret.
+motte:
+  url: ""
+  kid: ""
+  keySecret:
+    name: ""
+    key: key
+
+# hookSecret names the existing Secret that holds the subscription secret. Required when mirrors is not empty.
+hookSecret:
+  name: ""
+  key: secret
+
+# trustedKeys is the list of caller public keys. Each entry has kid, key (standard base64 of an Ed25519 public key)
+# and scopes (read, operator, land). Set trustedKeysSecret to read the JSON list from an existing Secret instead.
+# Set at most one of the two.
+trustedKeys: []
+trustedKeysSecret:
+  name: ""
+  key: trusted-keys.json
+
+# mirrors lists the mirrors. Each has name, repo, remote, refs, pruneUnknown, username, and exactly one credential:
+#   credential: {secret: NAME, key: KEY}                       a file with the password or token of the remote
+#   githubApp: {appId: N, installationId: N, secret: NAME, key: KEY}   a PEM RSA private key of a GitHub App
+mirrors: []
+
+# githubApiUrl sets WARD_GITHUB_API_URL, for a GitHub Enterprise Server.
+githubApiUrl: ""
+
+# cloneDiskBudget (bytes) and cloneIdleTtl (Go duration) set WARD_CLONE_DISK_BUDGET and WARD_CLONE_IDLE_TTL.
+cloneDiskBudget: ""
+cloneIdleTtl: ""
+
+# persistence is the volume of WARD_DATA_DIR, which holds the SQLite state and the clone cache. ward has one
+# writer, so the Deployment has one replica and the strategy Recreate.
+persistence:
+  size: 30Gi
+  storageClassName: ""
+  accessModes: [ReadWriteOnce]
+
+# otlpEndpoint enables OTLP trace export when set.
+otlpEndpoint: ""
+
+prometheusAnnotations: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+
+# extraEnv adds environment variables to the container, such as GIT_SSL_CAINFO.
+extraEnv: []

@@ -26,6 +26,7 @@ Non-goals:
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential. `internal/mirror/sqlite` is its state store. | W2, W3 |
 | `internal/telemetry` | OTLP trace export. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget, wall-clock analyzer. | W1 |
+| `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
 | Change requests, review, merge queue, CI orchestration, import host | See Planned work. | Not built |
 
 ward imports the public packages of motte: `api` (wire types), `grant` (to sign the grants that ward sends to motte) and `client` (the HTTP client). It never imports an internal package of motte. Tests also import `testserver` and `meta` of motte.
@@ -318,6 +319,12 @@ The answer is 200 with `{ref, generation, tip, fast_forward, commits, branch_del
 `ward land [--ref REF] [--delete-branch] REPO BRANCH` calls this route. It reads `WARD_URL`, and a token from `WARD_TOKEN`, or else it signs a `land` token for `REPO` that lives 5 minutes, with the Ed25519 key file `WARD_KEY_FILE` and the `kid` `WARD_KID`. On success it prints the lines `landed ...`, `tip <commit>`, `generation <n>`, `fast-forward` when it applies, one `<old> -> <new>` for each commit, and `branch deleted` when it applies, and it exits 0. On a conflict it prints the paths to standard error and exits 1. Any other failure exits 1. A usage error or a missing credential exits 2.
 
 Contract tests land a branch onto a protected `main` through a real motte and check the tip, the mapping and the files at the new tip, a conflict with its paths and an unmoved ref, the refusal of a token without the `land` scope or for another repository, `delete_branch`, and the exit codes of the command.
+
+## Release
+
+The image `ghcr.io/majorcontext/ward` is built from `images/ward/Dockerfile`: a static binary (`CGO_ENABLED=0`) on a `debian:bookworm-slim` base that is pinned by digest, with `git` and CA certificates, and it runs as the non-root user 65532. The mirror runs the `git` binary, and a distroless static base has none. The workflow `.github/workflows/image.yml` builds and pushes it for `linux/amd64` and `linux/arm64` on a tag `v*`, with the tag as the version in the binary.
+
+The chart `charts/ward` runs one replica with the strategy `Recreate`, because the SQLite state store has a single writer. A PersistentVolumeClaim holds `WARD_DATA_DIR`. The chart mounts the motte signing key, the hook secret and the credential of each mirror (a token file, or a GitHub App key) as files from Kubernetes Secrets. `WARD_MIRRORS` comes from the values. Liveness uses `/health` and readiness uses `/ready`. The CI job `chart` lints the chart and renders it with each file of `charts/ward/ci/`.
 
 ## Planned work
 

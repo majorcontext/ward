@@ -1,0 +1,168 @@
+{{- $motteURL := required "motte.url is required" .Values.motte.url -}}
+{{- $kid := required "motte.kid is required" .Values.motte.kid -}}
+{{- $keySecret := required "motte.keySecret.name is required" .Values.motte.keySecret.name -}}
+{{- if and .Values.trustedKeys .Values.trustedKeysSecret.name }}{{ fail "set at most one of trustedKeys and trustedKeysSecret.name" }}{{ end -}}
+{{- if .Values.mirrors -}}
+{{- $_ := required "publicUrl is required when mirrors is not empty" .Values.publicUrl -}}
+{{- $_ := required "hookSecret.name is required when mirrors is not empty" .Values.hookSecret.name -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "ward.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ward.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ward.labels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.prometheusAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.listenPort | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ward.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ward
+          image: {{ include "ward.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: {{ .Values.listenPort }}
+          env:
+            - name: WARD_LISTEN
+              value: {{ printf ":%v" .Values.listenPort | quote }}
+            - name: WARD_DATA_DIR
+              value: /var/lib/ward
+            - name: WARD_MOTTE_URL
+              value: {{ $motteURL | quote }}
+            - name: WARD_MOTTE_KID
+              value: {{ $kid | quote }}
+            - name: WARD_MOTTE_KEY_FILE
+              value: /var/run/ward/motte/key
+            {{- if .Values.mirrors }}
+            - name: WARD_PUBLIC_URL
+              value: {{ .Values.publicUrl | quote }}
+            - name: WARD_HOOK_SECRET_FILE
+              value: /var/run/ward/hook/secret
+            - name: WARD_MIRRORS
+              value: {{ include "ward.mirrors" . | quote }}
+            {{- end }}
+            {{- if .Values.trustedKeysSecret.name }}
+            - name: WARD_TRUSTED_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.trustedKeysSecret.name }}
+                  key: {{ .Values.trustedKeysSecret.key }}
+            {{- else if .Values.trustedKeys }}
+            - name: WARD_TRUSTED_KEYS
+              value: {{ toJson .Values.trustedKeys | quote }}
+            {{- end }}
+            {{- with .Values.githubApiUrl }}
+            - name: WARD_GITHUB_API_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cloneDiskBudget }}
+            - name: WARD_CLONE_DISK_BUDGET
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cloneIdleTtl }}
+            - name: WARD_CLONE_IDLE_TTL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/ward
+            - name: motte-key
+              mountPath: /var/run/ward/motte
+              readOnly: true
+            {{- if .Values.mirrors }}
+            - name: hook-secret
+              mountPath: /var/run/ward/hook
+              readOnly: true
+            {{- end }}
+            {{- range .Values.mirrors }}
+            - name: mirror-{{ .name }}
+              mountPath: /var/run/ward/mirrors/{{ .name }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+        - name: motte-key
+          secret:
+            secretName: {{ $keySecret }}
+            items:
+              - key: {{ .Values.motte.keySecret.key }}
+                path: key
+        {{- if .Values.mirrors }}
+        - name: hook-secret
+          secret:
+            secretName: {{ .Values.hookSecret.name }}
+            items:
+              - key: {{ .Values.hookSecret.key }}
+                path: secret
+        {{- end }}
+        {{- range .Values.mirrors }}
+        {{- $src := default .githubApp .credential }}
+        - name: mirror-{{ .name }}
+          secret:
+            secretName: {{ required (printf "mirror %s: the credential needs secret" .name) $src.secret }}
+            items:
+              - key: {{ required (printf "mirror %s: the credential needs key" .name) $src.key }}
+                path: credential
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
