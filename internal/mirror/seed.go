@@ -378,8 +378,8 @@ func (e *Engine) deleteSeeded(ctx context.Context, en Entry, stale []string, exp
 		return err
 	}
 	for _, s := range specs {
-		if res[s.Ref] != outcomeOK {
-			e.log.Warn("seed cleanup could not delete a ref", "mirror", en.Name, "ref", s.Ref)
+		if !hasResult(res, s.Ref) || res[s.Ref] != outcomeOK {
+			return fmt.Errorf("motte refused the delete of %s", s.Ref)
 		}
 	}
 	return nil

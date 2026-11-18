@@ -165,7 +165,7 @@ func GitRef(stored string) (string, bool) {
 // StoredRef is the inverse of GitRef.
 func StoredRef(git string) (string, bool) {
 	if name, ok := strings.CutPrefix(git, "refs/heads/"); ok {
-		return name, Mirrorable(name)
+		return name, !strings.HasPrefix(name, "refs/") && Mirrorable(name)
 	}
 	return git, strings.HasPrefix(git, "refs/tags/") && Mirrorable(git)
 }
