@@ -285,7 +285,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		o.refs = []string{"feature/*"}
 	}
 	seed := base64.StdEncoding.EncodeToString(h.motte.Operator.Key.Seed())
-	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator"}}})
+	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land"}}})
 	dataDir, credFile := h.dataDir, h.credFile()
 	if o.relative {
 		dir, err := os.MkdirTemp(".", "rel-")

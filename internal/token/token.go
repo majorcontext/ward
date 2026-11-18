@@ -19,6 +19,7 @@ type Scope string
 const (
 	ScopeRead     Scope = "read"
 	ScopeOperator Scope = "operator"
+	ScopeLand     Scope = "land"
 )
 
 const prefix = "wd1."
@@ -34,7 +35,7 @@ type Claims struct {
 
 func (c Claims) valid() bool {
 	switch c.Scope {
-	case ScopeRead:
+	case ScopeRead, ScopeLand:
 		return c.Repo != ""
 	case ScopeOperator:
 		return true

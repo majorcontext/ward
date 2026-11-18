@@ -18,10 +18,11 @@ Non-goals:
 
 | Component | Responsibility | Phase |
 |---|---|---|
-| `cmd/ward` | Process: `ward` serves, `ward version` prints the version. It also serves as the `GIT_ASKPASS` helper (see Git access). | W2 |
+| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
-| `internal/server` | HTTP routes, error envelope, token checks, status API. | W2 |
+| `internal/server` | HTTP routes, error envelope, token checks, status API, land route. | W2, W3 |
+| `internal/land` | The land (see Land): merge base and the call to motte. | W3 |
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential. `internal/mirror/sqlite` is its state store. | W2, W3 |
 | `internal/telemetry` | OTLP trace export. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget, wall-clock analyzer. | W1 |
@@ -54,7 +55,7 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_MOTTE_KEY_FILE` | Path of the file that holds the Ed25519 private key that signs those grants, as the standard base64 of its 64 bytes or of its 32-byte seed. Required. |
 | `WARD_PUBLIC_URL` | Base URL under which motte reaches ward. The receiver URL is this value plus `/v1/hooks/motte`. Required when a mirror is configured. |
 | `WARD_HOOK_SECRET_FILE` | Path of the file that holds the subscription secret (16 to 256 bytes, with a final line break removed). Required when a mirror is configured. |
-| `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read` and `operator`. The service refuses to start on any other scope text. |
+| `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read`, `operator` and `land`. The service refuses to start on any other scope text. |
 | `WARD_MIRRORS` | JSON list of mirror entries (see Mirror, Configuration). Optional. |
 | `WARD_GITHUB_API_URL` | Base URL of the GitHub API for the GitHub App credential. An `http` or `https` URL. Default `https://api.github.com`. |
 | `WARD_STATE_FILE` | Path of the SQLite file of the state store. Default `WARD_DATA_DIR/state.db`. |
@@ -63,7 +64,7 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional. Enables OTLP trace export. |
 | `GIT_SSL_CAINFO` | Optional. ward passes it to git, so that git trusts a private certificate authority of a remote. |
 
-The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. A later feature that lands through motte adds the scope `merge`.
+The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. The land (see Land) also needs the scope `merge`, so that key must hold `operator`, `read` and `merge`.
 
 `GET /health` answers 200. `GET /ready` answers 200 while the state store answers a ping. `GET /metrics` serves Prometheus metrics. These routes need no token. A path or method that no route serves answers 404 `not_found` or 405 `method_not_allowed` in the error envelope.
 
@@ -76,16 +77,16 @@ A caller token has the same encoding as a motte grant: `wd1.<base64url payload>.
 | Claim | Meaning |
 |---|---|
 | `kid` | Key identifier. The verifier selects the public key by `kid`. |
-| `scope` | `read` or `operator`. |
-| `repo` | Repository text of motte. Required for `read`. |
+| `scope` | `read`, `operator` or `land`. |
+| `repo` | Repository text of motte. Required for `read` and `land`. |
 | `subject` | The caller identity, for logs and traces only. It grants nothing. |
 | `exp` | Expiry as Unix seconds. A token is valid while `now < exp`. |
 
-`read` names one repository and may read its mirror status. `operator` may read every status and may trigger a repair. The verifier holds only public keys, each with a set of allowed scopes. Every rejection answers 401 `unauthorized` with the same body, and the response never carries the token. ward takes the repository from the token, never from an unchecked request field.
+`read` names one repository and may read its mirror status. `operator` may read every status and may trigger a repair. `land` names one repository and may land a branch of it (see Land); it reads no status. The verifier holds only public keys, each with a set of allowed scopes. Every rejection answers 401 `unauthorized` with the same body, and the response never carries the token. ward takes the repository from the token, never from an unchecked request field.
 
 ## Errors
 
-The error body is `{"error":{"code","message","details"}}`. Codes: `unauthorized` (401), `forbidden` (403), `not_found` (404), `invalid_body` (400), `method_not_allowed` (405), `internal_error` (500). A panic in a handler is logged with its stack and answers 500 `internal_error` when the handler sent no status yet.
+The error body is `{"error":{"code","message","details"}}`. Codes: `unauthorized` (401), `forbidden` (403), `not_found` (404), `invalid_body` (400), `method_not_allowed` (405), `internal_error` (500), `land_conflict` (409, with `details.paths`), `land_invalid` (400) and `land_timeout` (504). A panic in a handler is logged with its stack and answers 500 `internal_error` when the handler sent no status yet.
 
 ## Mirror
 
@@ -298,6 +299,25 @@ A ref is `synced` when it is not dirty, `pending` when it is dirty with no failu
 ### Tests
 
 The GitHub App contract tests use a fake token endpoint that checks the signature of the JWT with the public key and the claims, and a remote that accepts only the token that the endpoint issued last as the HTTP Basic password. They cover a push with a token, the cache across pushes, a refresh after the cached token nears its expiry, and a 401 from the endpoint. Contract tests start ward against a real motte (the `testserver` package of motte, which does not run the delivery worker) and a bare git repository that `git http-backend` serves over HTTP as the remote. A test reads the ref events from `GET /v1/events` and delivers them to the receiver with a real signature, as motte would, and it can drop an event to make a gap. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock: a test that checks the backoff replaces the clock and moves it, and the other tests wait for the report of a finished unit of work, never for time.
+
+## Land
+
+A land moves a motte branch onto a ref through the batched land of motte (see Land of motte). It is the first workflow feature, and the merge queue (see Planned work) builds on it.
+
+`POST /v1/lands` takes the JSON `{repo, ref, branch, delete_branch}`. `repo` and `branch` are required. `ref` is a stored ref name of motte and defaults to `main`. `delete_branch` defaults to false. The caller needs a `land` token (see Caller token). The `repo` of the body must equal the `repo` of the token, else 403 `forbidden`. A token of another scope answers 403 `forbidden`. A body with an unknown field answers 400 `invalid_body`.
+
+ward does these steps:
+
+1. Read the stored refs `branch` and `ref` from motte with a `read` grant. A missing ref answers 404 `not_found`.
+2. Find the base. The base is the commit that the branch was built on. ward reads commit objects with `GET /v1/vcs/objects/{sha}` and follows the first parent of both the tip of `ref` and the head of `branch`, one commit at a time on each side. The base is the first commit that one walk reaches and the other walk has already seen, so it is the newest commit that both first-parent chains hold. The commit API of motte gives no parents, so the objects are the only source. A walk stops after 10000 commits on each side. If the chains never meet, the answer is 400 `land_invalid`. The caller does not send a base.
+3. Call `POST /v1/repos/{repo}/lands` of motte with `{ref, base, head}`, where `head` is the commit of `branch`, with a `merge` grant that ward signs with its own key (see Service). A `merge` grant lands on a protected ref, so a protected `main` is landable. The grant lives 5 minutes and has the subject `ward`.
+4. If `delete_branch` is true and the land succeeded, ward deletes the stored ref `branch` with the generation that it read in step 1. A delete that fails, such as a branch that moved since, does not fail the land.
+
+The answer is 200 with `{ref, generation, tip, fast_forward, commits, branch_deleted}`. `commits` is a list of `{old, new}`, oldest first, that maps each commit of the branch to the commit that replaced it. It is empty for a fast-forward. A conflict of motte answers 409 `land_conflict` with `details.paths`, the sorted paths that clash. A range that motte refuses (for example when `base` equals the head, that is, the branch is already part of `ref`) answers 400 `land_invalid`. A land that motte does not finish in time answers 504 `land_timeout`, and any other failure of motte answers 500 `internal_error`.
+
+`ward land [--ref REF] [--delete-branch] REPO BRANCH` calls this route. It reads `WARD_URL`, and a token from `WARD_TOKEN`, or else it signs a `land` token for `REPO` that lives 5 minutes, with the Ed25519 key file `WARD_KEY_FILE` and the `kid` `WARD_KID`. On success it prints the lines `landed ...`, `tip <commit>`, `generation <n>`, `fast-forward` when it applies, one `<old> -> <new>` for each commit, and `branch deleted` when it applies, and it exits 0. On a conflict it prints the paths to standard error and exits 1. Any other failure exits 1. A usage error or a missing credential exits 2.
+
+Contract tests land a branch onto a protected `main` through a real motte and check the tip, the mapping and the files at the new tip, a conflict with its paths and an unmoved ref, the refusal of a token without the `land` scope or for another repository, `delete_branch`, and the exit codes of the command.
 
 ## Planned work
 

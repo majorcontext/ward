@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/config"
+	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
 	"github.com/majorcontext/ward/internal/server"
@@ -34,8 +35,15 @@ func main() {
 		fmt.Println("ward", version)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "land" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		code := runLand(ctx, os.Args[2:], os.Getenv, time.Now, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version]")
+		fmt.Fprintln(os.Stderr, "usage: ward [version | land REPO BRANCH]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -78,7 +86,7 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	}
 	defer func() { _ = store.Close() }()
 
-	deps := server.Deps{Store: store, Verifier: token.NewVerifier(cfg.TrustedKeys...), Logger: opts.Logger}
+	deps := server.Deps{Store: store, Verifier: token.NewVerifier(cfg.TrustedKeys...), Logger: opts.Logger, Land: land.New(cfg.Land, nil)}
 	var engine *mirror.Engine
 	if len(cfg.Mirror.Mirrors) > 0 {
 		engine = mirror.New(cfg.Mirror, store, opts)

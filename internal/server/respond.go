@@ -14,6 +14,9 @@ const (
 	codeInvalidBody      code = "invalid_body"
 	codeMethodNotAllowed code = "method_not_allowed"
 	codeInternal         code = "internal_error"
+	codeLandConflict     code = "land_conflict"
+	codeLandInvalid      code = "land_invalid"
+	codeLandTimeout      code = "land_timeout"
 )
 
 var statuses = map[code]int{
@@ -23,6 +26,9 @@ var statuses = map[code]int{
 	codeInvalidBody:      http.StatusBadRequest,
 	codeMethodNotAllowed: http.StatusMethodNotAllowed,
 	codeInternal:         http.StatusInternalServerError,
+	codeLandConflict:     http.StatusConflict,
+	codeLandInvalid:      http.StatusBadRequest,
+	codeLandTimeout:      http.StatusGatewayTimeout,
 }
 
 type errorBody struct {
@@ -34,9 +40,11 @@ type errorBody struct {
 }
 
 // writeError is the only writer of an error body.
-func writeError(w http.ResponseWriter, c code, message string) {
+func writeError(w http.ResponseWriter, c code, message string) { writeErrorDetails(w, c, message, nil) }
+
+func writeErrorDetails(w http.ResponseWriter, c code, message string, details map[string]any) {
 	var b errorBody
-	b.Error.Code, b.Error.Message = c, message
+	b.Error.Code, b.Error.Message, b.Error.Details = c, message, details
 	writeJSON(w, statuses[c], b)
 }
 

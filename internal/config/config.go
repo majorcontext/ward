@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
 )
@@ -29,6 +30,7 @@ type Config struct {
 	Listen      string
 	StateFile   string
 	Mirror      mirror.Config
+	Land        land.Config
 	TrustedKeys []token.Key
 	OTLP        bool
 }
@@ -54,11 +56,12 @@ func Load(getenv func(string) string) (Config, error) {
 			return c, fmt.Errorf("WARD_STATE_FILE: %w", err)
 		}
 	}
-	key, err := readPrivateKey(getenv("WARD_MOTTE_KEY_FILE"))
+	key, err := ReadPrivateKey(getenv("WARD_MOTTE_KEY_FILE"))
 	if err != nil {
 		return c, fmt.Errorf("WARD_MOTTE_KEY_FILE: %w", err)
 	}
 	c.Mirror.Motte = mirror.MotteConfig{URL: getenv("WARD_MOTTE_URL"), Kid: getenv("WARD_MOTTE_KID"), Key: key}
+	c.Land = land.Config{URL: c.Mirror.Motte.URL, Kid: c.Mirror.Motte.Kid, Key: key}
 	if v := getenv("WARD_GITHUB_API_URL"); v != "" {
 		if u, err := url.Parse(v); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return c, errors.New("WARD_GITHUB_API_URL must be an http or https URL")
@@ -111,7 +114,8 @@ func (c *Config) loadMirrorEnv(getenv func(string) string) error {
 	return nil
 }
 
-func readPrivateKey(path string) (ed25519.PrivateKey, error) {
+// ReadPrivateKey reads an Ed25519 private key file: the standard base64 of the 64-byte key or of the 32-byte seed.
+func ReadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errors.New("unreadable")
@@ -150,7 +154,7 @@ func parseTrustedKeys(raw string) ([]token.Key, error) {
 		}
 		tk := token.Key{Kid: k.Kid, Public: pub}
 		for _, s := range k.Scopes {
-			if s != string(token.ScopeRead) && s != string(token.ScopeOperator) {
+			if s != string(token.ScopeRead) && s != string(token.ScopeOperator) && s != string(token.ScopeLand) {
 				return nil, fmt.Errorf("key %q has the unknown scope %q", k.Kid, s)
 			}
 			tk.Scopes = append(tk.Scopes, token.Scope(s))

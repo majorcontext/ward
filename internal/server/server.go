@@ -16,6 +16,7 @@ import (
 
 	"github.com/majorcontext/motte/api"
 
+	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
 )
@@ -25,6 +26,7 @@ const maxHookBody = 64 << 10
 // Deps are what the handler needs. Engine is nil when no mirror is configured.
 type Deps struct {
 	Engine   *mirror.Engine
+	Land     *land.Service
 	Store    mirror.Store
 	Verifier *token.Verifier
 	Registry *prometheus.Registry
@@ -61,6 +63,7 @@ func New(d Deps) *Server {
 	s.mux.HandleFunc("GET /v1/mirrors", s.listMirrors)
 	s.mux.HandleFunc("GET /v1/mirrors/{name}", s.getMirror)
 	s.mux.HandleFunc("POST /v1/mirrors/{name}/reconcile", s.reconcile)
+	s.mux.HandleFunc("POST /v1/lands", s.land)
 	return s
 }
 
