@@ -22,10 +22,6 @@ func (e *Engine) span(ctx context.Context, name string) (context.Context, func()
 	return ctx, func() { s.End() }
 }
 
-func remoteCreds(en Entry) gitCreds {
-	return gitCreds{AskUser: en.Username, AskFile: en.CredentialFile}
-}
-
 // batch acts on the due refs of one mirror with one clone. A failure that is neither network nor remote deletes the clone and acts once more.
 func (e *Engine) batch(ctx context.Context, en Entry, due []Ref) {
 	lock := e.repos.get(en.Repo)
@@ -167,10 +163,14 @@ func (e *Engine) attempt(ctx context.Context, en Entry, due []Ref, final bool) (
 	if e.fetchTargets(ctx, en, clone, targets, final) {
 		return true
 	}
-	creds := remoteCreds(en)
+	creds, release, err := e.remoteCreds(ctx, en)
+	if err != nil {
+		return e.failAll(ctx, en, targets, func(*target) bool { return true }, credClass(err), true, final)
+	}
 	pctx, end := e.span(ctx, "ward.mirror.push")
 	results, err := e.git.push(pctx, clone, en.Remote, creds, specsOf(targets))
 	end()
+	release()
 	if err != nil {
 		return e.failAll(ctx, en, targets, func(*target) bool { return true }, classifyRemote(err), true, final)
 	}
@@ -210,13 +210,15 @@ func (e *Engine) settle(ctx context.Context, en Entry, targets []*target, result
 
 // reconcileStale reads the remote value of each refused ref, records it as pushed, and pushes again at once.
 func (e *Engine) reconcileStale(ctx context.Context, en Entry, clone string, stale []*target) {
-	creds := remoteCreds(en)
+	creds, release, err := e.remoteCreds(ctx, en)
+	if err != nil {
+		e.failStale(ctx, en, stale, credClass(err))
+		return
+	}
+	defer release()
 	tips, err := e.git.lsRemote(ctx, en.Remote, creds)
 	if err != nil {
-		for _, t := range stale {
-			t.failed = true
-			e.fail(ctx, en, t.ref, classifyRemote(err))
-		}
+		e.failStale(ctx, en, stale, classifyRemote(err))
 		return
 	}
 	for _, t := range stale {
@@ -237,6 +239,13 @@ func (e *Engine) reconcileStale(ctx context.Context, en Entry, clone string, sta
 			t.failed = true
 			e.fail(ctx, en, t.ref, ClassRemoteRejected)
 		}
+	}
+}
+
+func (e *Engine) failStale(ctx context.Context, en Entry, stale []*target, class Class) {
+	for _, t := range stale {
+		t.failed = true
+		e.fail(ctx, en, t.ref, class)
 	}
 }
 

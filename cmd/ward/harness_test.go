@@ -65,6 +65,7 @@ type remote struct {
 	srv  *httptest.Server
 	URL  string
 	pass atomicString
+	user string
 	gate atomic.Pointer[gate]
 }
 
@@ -92,7 +93,7 @@ func (a *atomicString) get() string  { a.mu.Lock(); defer a.mu.Unlock(); return 
 func newRemote(t *testing.T) *remote {
 	t.Helper()
 	root := t.TempDir()
-	r := &remote{t: t, dir: filepath.Join(root, "r.git")}
+	r := &remote{t: t, dir: filepath.Join(root, "r.git"), user: remoteUser}
 	gitIn(t, root, "init", "--bare", "-q", r.dir)
 	gitIn(t, r.dir, "config", "http.receivepack", "true")
 	exec := gitIn(t, root, "--exec-path")
@@ -101,7 +102,7 @@ func newRemote(t *testing.T) *remote {
 	r.pass.set(remotePass)
 	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		u, p, ok := req.BasicAuth()
-		if !ok || u != remoteUser || p != r.pass.get() {
+		if !ok || u != r.user || p != r.pass.get() {
 			w.Header().Set("WWW-Authenticate", `Basic realm="r"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -258,6 +259,8 @@ type wardOpts struct {
 	// proxied sends ward to motte through a proxy that holdMotte can hold.
 	proxied bool
 	noWait  bool
+	// app makes the mirror take its credential from a GitHub App installation at this fake.
+	app *fakeGitHub
 }
 
 type wardProc struct {
@@ -282,7 +285,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		o.refs = []string{"feature/*"}
 	}
 	seed := base64.StdEncoding.EncodeToString(h.motte.Operator.Key.Seed())
-	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator"}}})
+	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land"}}})
 	dataDir, credFile := h.dataDir, h.credFile()
 	if o.relative {
 		dir, err := os.MkdirTemp(".", "rel-")
@@ -296,8 +299,15 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 			h.t.Fatal(err)
 		}
 	}
-	entries, _ := json.Marshal([]mirror.Entry{{Name: mirrorName, Repo: h.repo, Remote: "https://remote.invalid/r.git", Refs: o.refs,
-		Username: remoteUser, CredentialFile: credFile, PruneUnknown: o.prune}})
+	entry := mirror.Entry{Name: mirrorName, Repo: h.repo, Remote: "https://remote.invalid/r.git", Refs: o.refs,
+		Username: remoteUser, CredentialFile: credFile, PruneUnknown: o.prune}
+	githubAPI := ""
+	if o.app != nil {
+		entry.Username, entry.CredentialFile = "", ""
+		entry.GitHubApp = &mirror.GitHubApp{AppID: appID, InstallationID: installationID, KeyFile: o.app.keyFile}
+		githubAPI = o.app.srv.URL
+	}
+	entries, _ := json.Marshal([]mirror.Entry{entry})
 	motteURL := h.motte.URL
 	if o.proxied {
 		motteURL = h.proxy().URL
@@ -308,7 +318,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_DATA_DIR": dataDir, "WARD_MOTTE_URL": motteURL, "WARD_MOTTE_KID": "cp",
 		"WARD_MOTTE_KEY_FILE": h.writeFile("motte.key", seed), "WARD_PUBLIC_URL": "http://" + h.addr,
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
-		"WARD_MIRRORS": string(entries), "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
+		"WARD_MIRRORS": string(entries), "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
 	}
 	adjust := func(c *config.Config) {
 		c.Mirror.Mirrors[0].Remote = h.remote.URL

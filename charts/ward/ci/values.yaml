@@ -1,0 +1,27 @@
+image:
+  tag: v0.0.0
+publicUrl: http://ward.example
+motte:
+  url: http://motte.example
+  kid: ward
+  keySecret:
+    name: ward-motte-key
+hookSecret:
+  name: ward-hook
+trustedKeys:
+  - kid: caller
+    key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    scopes: [operator, land]
+mirrors:
+  - name: widgets-token
+    repo: native:widgets
+    remote: https://git.example/widgets.git
+    refs: [main, release/*]
+    username: ward-bot
+    credential: {secret: widgets-remote, key: token}
+  - name: gadgets-app
+    repo: native:gadgets
+    remote: https://git.example/gadgets.git
+    refs: ["*"]
+    pruneUnknown: true
+    githubApp: {appId: 123, installationId: 456, secret: gadgets-app, key: private-key.pem}
