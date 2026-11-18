@@ -88,6 +88,9 @@ type Store interface {
 	SetPushed(ctx context.Context, mirror, ref, pushed string) error
 	// Reconciled triggers each ref of targets, sets its pushed value, and records the mirror.
 	Reconciled(ctx context.Context, mirror string, targets map[string]string, now time.Time) error
+	// Seed returns the seed record of a mirror: empty, started or done.
+	Seed(ctx context.Context, mirror string) (string, error)
+	SetSeed(ctx context.Context, mirror, state string) error
 	HasMirror(ctx context.Context, name string) (bool, error)
 	StateRefs(ctx context.Context, mirror string) ([]string, error)
 	Refs(ctx context.Context, mirror, after string, limit int) ([]Ref, error)

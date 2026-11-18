@@ -29,6 +29,7 @@ type Entry struct {
 	CredentialFile string     `json:"credential_file,omitempty"`
 	GitHubApp      *GitHubApp `json:"github_app,omitempty"`
 	PruneUnknown   bool       `json:"prune_unknown"`
+	Seed           bool       `json:"seed"`
 }
 
 // ParseEntries decodes and checks the WARD_MIRRORS list. It rejects an unknown field.

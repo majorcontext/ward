@@ -33,6 +33,9 @@ type Config struct {
 	GitHubAPI  string
 	DiskBudget int64
 	IdleTTL    time.Duration
+	// SeedMaxObjects and SeedMaxBytes bound one push of a seed. Zero means the default.
+	SeedMaxObjects int
+	SeedMaxBytes   int64
 	// Askpass is the program that git runs for the remote credential. It is the ward binary.
 	Askpass string
 }
@@ -66,6 +69,8 @@ type Engine struct {
 	workers map[string]*worker
 	// pending holds the Reconcile requests that came before the worker of a mirror started.
 	pending map[string]bool
+	// seedStates holds StateSeeding or StateSeedRefused for each mirror that has one.
+	seedStates map[string]string
 }
 
 type wants struct{ init, catchup, reset bool }
@@ -81,6 +86,12 @@ func New(cfg Config, store Store, opts Options) *Engine {
 	if cfg.DiskBudget == 0 {
 		cfg.DiskBudget = DefaultDiskBudget
 	}
+	if cfg.SeedMaxObjects == 0 {
+		cfg.SeedMaxObjects = DefaultSeedMaxObjects
+	}
+	if cfg.SeedMaxBytes == 0 {
+		cfg.SeedMaxBytes = DefaultSeedMaxBytes
+	}
 	if cfg.IdleTTL == 0 {
 		cfg.IdleTTL = DefaultIdleTTL
 	}
@@ -95,6 +106,8 @@ func New(cfg Config, store Store, opts Options) *Engine {
 		ctrl:    make(chan struct{}, 1),
 		workers: map[string]*worker{},
 		pending: map[string]bool{},
+
+		seedStates: map[string]string{},
 	}
 	for _, en := range cfg.Mirrors {
 		e.entries[en.Name] = en
@@ -227,7 +240,16 @@ func (e *Engine) initialize(ctx context.Context, wg *sync.WaitGroup) error {
 		if err != nil {
 			return err
 		}
-		if !known {
+		seedState := ""
+		if en.Seed {
+			if seedState, err = e.store.Seed(ctx, en.Name); err != nil {
+				return err
+			}
+		}
+		switch {
+		case en.Seed && seedState != seedDone && (seedState == seedStarted || !known):
+			e.workers[en.Name].requestSeed()
+		case !known:
 			e.workers[en.Name].requestReconcile()
 		}
 	}

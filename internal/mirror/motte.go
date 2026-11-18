@@ -55,3 +55,9 @@ func (m motteSigner) gitCreds(repo string) (gitCreds, error) {
 	tok, err := m.mint(grant.ScopeRead, repo, readLife)
 	return gitCreds{Header: "Authorization: Bearer " + tok}, err
 }
+
+// mergeCreds returns the header of a merge grant for one push to motte.
+func (m motteSigner) mergeCreds(repo string) (gitCreds, error) {
+	tok, err := m.mint(grant.ScopeMerge, repo, readLife)
+	return gitCreds{Header: "Authorization: Bearer " + tok}, err
+}

@@ -64,11 +64,18 @@ func (g *gitRunner) env(c gitCreds) []string {
 }
 
 func (g *gitRunner) run(ctx context.Context, dir string, c gitCreds, args ...string) (string, error) {
+	return g.runIn(ctx, dir, c, "", args...)
+}
+
+func (g *gitRunner) runIn(ctx context.Context, dir string, c gitCreds, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = g.env(c)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

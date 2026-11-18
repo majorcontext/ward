@@ -69,6 +69,9 @@ func (s *Server) summary(ctx context.Context, en mirror.Entry) (mirrorStatus, er
 			st.State = mirrorState(x)
 		}
 	}
+	if seed := s.d.Engine.SeedState(en.Name); seed != "" {
+		st.State = seed
+	}
 	return st, nil
 }
 

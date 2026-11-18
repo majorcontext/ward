@@ -111,6 +111,20 @@ func (c *Config) loadMirrorEnv(getenv func(string) string) error {
 		}
 		c.Mirror.IdleTTL = d
 	}
+	if v := getenv("WARD_SEED_MAX_OBJECTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return errors.New("WARD_SEED_MAX_OBJECTS must be a positive number")
+		}
+		c.Mirror.SeedMaxObjects = n
+	}
+	if v := getenv("WARD_SEED_MAX_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return errors.New("WARD_SEED_MAX_BYTES must be a positive number of bytes")
+		}
+		c.Mirror.SeedMaxBytes = n
+	}
 	return nil
 }
 

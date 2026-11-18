@@ -261,6 +261,9 @@ type wardOpts struct {
 	noWait  bool
 	// app makes the mirror take its credential from a GitHub App installation at this fake.
 	app *fakeGitHub
+	// seed sets seed on the mirror. seedObjects lowers the object limit of one seed push.
+	seed        bool
+	seedObjects string
 }
 
 type wardProc struct {
@@ -300,7 +303,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		}
 	}
 	entry := mirror.Entry{Name: mirrorName, Repo: h.repo, Remote: "https://remote.invalid/r.git", Refs: o.refs,
-		Username: remoteUser, CredentialFile: credFile, PruneUnknown: o.prune}
+		Username: remoteUser, CredentialFile: credFile, PruneUnknown: o.prune, Seed: o.seed}
 	githubAPI := ""
 	if o.app != nil {
 		entry.Username, entry.CredentialFile = "", ""
@@ -319,6 +322,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_MOTTE_KEY_FILE": h.writeFile("motte.key", seed), "WARD_PUBLIC_URL": "http://" + h.addr,
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
 		"WARD_MIRRORS": string(entries), "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
+		"WARD_SEED_MAX_OBJECTS": o.seedObjects,
 	}
 	adjust := func(c *config.Config) {
 		c.Mirror.Mirrors[0].Remote = h.remote.URL

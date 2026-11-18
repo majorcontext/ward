@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS service (
 );
 CREATE TABLE IF NOT EXISTS partitions (partition INTEGER PRIMARY KEY, last_seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mirrors (name TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS seeds (mirror TEXT PRIMARY KEY, state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS refs (
 	mirror TEXT NOT NULL,
 	ref TEXT NOT NULL,
@@ -298,6 +299,19 @@ func (s *Store) HasMirror(ctx context.Context, name string) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mirrors WHERE name = ?`, name).Scan(&n)
 	return n > 0, err
+}
+
+func (s *Store) Seed(ctx context.Context, name string) (string, error) {
+	var state string
+	err := s.db.QueryRowContext(ctx, `SELECT state FROM seeds WHERE mirror = ?`, name).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return state, err
+}
+
+func (s *Store) SetSeed(ctx context.Context, name, state string) error {
+	return s.exec(ctx, `INSERT INTO seeds (mirror, state) VALUES (?, ?) ON CONFLICT (mirror) DO UPDATE SET state = excluded.state`, name, state)
 }
 
 func (s *Store) StateRefs(ctx context.Context, name string) ([]string, error) {
