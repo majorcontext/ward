@@ -33,7 +33,8 @@ jobs:
         with:
           persist-credentials: false
       - if: github.ref_type == 'tag'
-        run: test "v$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' charts/ward/Chart.yaml)" = "$GITHUB_REF_NAME"
+        run: |
+          test "v$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' charts/ward/Chart.yaml)" = "$GITHUB_REF_NAME"
       - run: helm lint charts/ward -f charts/ward/ci/values.yaml
       - run: helm lint charts/ward -f charts/ward/ci/no-mirrors.yaml
       - run: helm template ward charts/ward -f charts/ward/ci/values.yaml > /dev/null
