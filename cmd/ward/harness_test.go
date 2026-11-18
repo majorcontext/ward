@@ -177,7 +177,9 @@ type harness struct {
 	motteGate  atomic.Pointer[gate]
 	// limitPushes makes the proxy answer 503 to a push of git once pushesLeft pushes passed.
 	// holdLand makes the proxy answer no land of main: it forwards the land, and keeps the reply until the caller leaves.
-	holdLand    atomic.Bool
+	holdLand atomic.Bool
+	// logHook sees each log line of ward.
+	logHook     atomic.Pointer[func(string)]
 	landRecord  chan struct{}
 	landBodies  []string
 	limitPushes atomic.Bool
@@ -368,7 +370,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	first := !h.started
 	h.started = true
 	go func() {
-		done <- run(ctx, func(k string) string { return env[k] }, ln, mirror.Options{Clock: o.clock, Done: h.note, Logger: slog.New(slog.NewTextHandler(testLog{h.t}, nil))}, adjust)
+		done <- run(ctx, func(k string) string { return env[k] }, ln, mirror.Options{Clock: o.clock, Done: h.note, Logger: slog.New(slog.NewTextHandler(testLog{h.t, &h.logHook}, nil))}, adjust)
 	}()
 	p := &wardProc{h: h, URL: "http://" + h.addr}
 	var once sync.Once
@@ -612,10 +614,16 @@ func gitErr(dir string, args ...string) error {
 	return cmd.Run()
 }
 
-type testLog struct{ t testing.TB }
+type testLog struct {
+	t    testing.TB
+	hook *atomic.Pointer[func(string)]
+}
 
 func (l testLog) Write(b []byte) (int, error) {
 	l.t.Log(strings.TrimSpace(string(b)))
+	if f := l.hook.Load(); f != nil {
+		(*f)(string(b))
+	}
 	return len(b), nil
 }
 

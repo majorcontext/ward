@@ -29,6 +29,7 @@ type outcome struct {
 	kind      kind
 	err       *Error
 	retryCode string
+	storeErr  error
 	landed    api.LandResponse
 	branchGen int64
 }
@@ -50,7 +51,7 @@ func (s *Service) run(l Land) error {
 			}
 		}
 		if out.kind == aborted {
-			return nil
+			return out.storeErr
 		}
 		return s.finish(&l, out)
 	}
@@ -83,6 +84,14 @@ func (s *Service) attempt(l *Land) outcome {
 		return out
 	}
 	return s.land(ctx, merger, l, base, branch.Commit, branch.Generation)
+}
+
+// storeFailure ends the attempt with no change to the land, so that a restart or the next land of the ref resumes it.
+func (s *Service) storeFailure(err error) outcome {
+	if s.ctx.Err() != nil {
+		return outcome{kind: aborted}
+	}
+	return outcome{kind: aborted, storeErr: err}
 }
 
 // refusal maps an error of motte to the end of the attempt.
@@ -149,7 +158,7 @@ func (s *Service) check(ctx context.Context, reader *client.Client, l *Land, tip
 	}
 	if l.State != Checking || l.Tree != tree {
 		if l.Mark, err = s.checks.Mark(ctx); err != nil {
-			return s.refusal(err)
+			return s.storeFailure(err)
 		}
 	}
 	states := make([]CheckState, len(checks))
@@ -158,7 +167,7 @@ func (s *Service) check(ctx context.Context, reader *client.Client, l *Land, tip
 	}
 	l.Tree, l.Checks = tree, states
 	if err := s.save(l, Checking); err != nil {
-		return s.refusal(err)
+		return s.storeFailure(err)
 	}
 	return s.await(ctx, l, checks, candidate)
 }
@@ -171,19 +180,19 @@ func (s *Service) await(ctx context.Context, l *Land, checks []check.Check, cand
 		for i, c := range checks {
 			v, err := s.checks.Verdict(ctx, l.Repo, l.Tree, c, l.Mark)
 			if err != nil {
-				return s.refusal(err)
+				return s.storeFailure(err)
 			}
 			verdicts[i] = v
 			l.Checks[i].State = v.State
 			if v.State == check.Pending {
 				pending = true
 				if err := s.checks.Ensure(ctx, l.Repo, l.Tree, candidate, c); err != nil {
-					return s.refusal(err)
+					return s.storeFailure(err)
 				}
 			}
 		}
 		if err := s.save(l, l.State); err != nil {
-			return s.refusal(err)
+			return s.storeFailure(err)
 		}
 		for i, v := range verdicts {
 			if v.State == check.Fail {
@@ -207,7 +216,7 @@ func (s *Service) land(ctx context.Context, merger *client.Client, l *Land, base
 	l.Attempt++
 	l.Call = &Call{Base: base, Head: head, Tree: l.Tree, BranchGen: branchGen}
 	if err := s.save(l, Landing); err != nil {
-		return s.refusal(err)
+		return s.storeFailure(err)
 	}
 	return s.send(ctx, merger, l)
 }

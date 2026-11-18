@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/motte/client"
+	_ "modernc.org/sqlite"
 
 	"github.com/majorcontext/ward/internal/check"
 	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
@@ -385,4 +387,57 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" || len(run.reqs) != 0 {
 		t.Fatalf("land = %+v, %d new requests: a fail from before the restart must end the land", failed, len(run.reqs))
 	}
+}
+
+func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) {
+	h, run := newHarness(t), newRunner(t)
+	logged := make(chan struct{}, 1)
+	hook := func(line string) {
+		if strings.Contains(line, "record the land") {
+			select {
+			case logged <- struct{}{}:
+			default:
+			}
+		}
+	}
+	h.logHook.Store(&hook)
+	p := h.startWard(wardOpts{runner: run})
+	base := h.seedChecked(unitChecks)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	l := h.postLand(p, "main", "feature/x", nil)
+	req := run.next()
+	h.awaitLand(p, l.ID, "checking")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(h.dataDir, "state.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), `CREATE TRIGGER failwrite BEFORE UPDATE ON lands
+		WHEN NEW.body LIKE '%"state":"checking"%' AND NEW.body LIKE '%"state":"pass"%' BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	moved := make(chan string, 1)
+	go func() {
+		r, _ := http.NewRequestWithContext(t.Context(), "GET", p.URL+"/v1/lands/"+l.ID+"?wait=30&state=checking", nil)
+		r.Header.Set("Authorization", "Bearer "+h.landToken(h.repo))
+		if resp, err := http.DefaultClient.Do(r); err == nil {
+			_ = resp.Body.Close()
+			moved <- "answered"
+		}
+	}()
+	p.answer(req, "pass", "ok")
+	select {
+	case <-logged:
+	case <-moved:
+		t.Fatal("the land left checking when one write failed: a store error must not end the land")
+	}
+	if _, got := p.landGet(h.landToken(h.repo), l.ID, ""); got.State != "checking" || got.Error != nil {
+		t.Fatalf("land after the failed write = %+v", got)
+	}
+	if _, err := db.ExecContext(t.Context(), `DROP TRIGGER failwrite`); err != nil {
+		t.Fatal(err)
+	}
+	p.stop()
+	p = h.startWard(wardOpts{runner: run})
+	h.awaitLand(p, l.ID, "landed")
 }
