@@ -16,6 +16,7 @@ type worker struct {
 
 	mu        sync.Mutex
 	reconcile bool
+	seed      bool
 	retryAt   time.Time
 	next      time.Time
 
@@ -32,6 +33,47 @@ func (w *worker) wake() {
 	case w.wakeCh <- struct{}{}:
 	default:
 	}
+}
+
+func (w *worker) requestSeed() {
+	w.mu.Lock()
+	w.seed = true
+	w.mu.Unlock()
+	w.wake()
+}
+
+// seeded runs a wanted seed. It returns false when the worker must stop acting: the seed was refused or ctx ended.
+// A failed seed retries with the backoff of a failed action.
+func (w *worker) seeded(ctx context.Context) bool {
+	for failures := 0; ctx.Err() == nil; {
+		w.mu.Lock()
+		want := w.seed
+		w.mu.Unlock()
+		if !want {
+			return true
+		}
+		err := w.e.seed(ctx, w.en)
+		switch {
+		case err == nil:
+			w.mu.Lock()
+			w.seed = false
+			w.mu.Unlock()
+			w.requestReconcile()
+			return true
+		case errors.Is(err, errSeedRefused):
+			w.e.log.Warn("seed refused", "mirror", w.en.Name, "error", err.Error())
+			return false
+		case ctx.Err() != nil:
+			return false
+		}
+		failures++
+		w.e.log.Warn("seed failed", "mirror", w.en.Name, "attempt", failures, "error", sanitize(err))
+		select {
+		case <-ctx.Done():
+		case <-w.e.clock.After(backoff(failures)):
+		}
+	}
+	return false
 }
 
 func (w *worker) requestReconcile() {
@@ -81,6 +123,10 @@ func (w *worker) maybeReconcile(ctx context.Context) {
 func (w *worker) run(ctx context.Context) {
 	failures := 0
 	for ctx.Err() == nil {
+		if !w.seeded(ctx) {
+			<-ctx.Done()
+			return
+		}
 		w.maybeReconcile(ctx)
 		done, err := w.step(ctx)
 		switch {

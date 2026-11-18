@@ -21,9 +21,9 @@ Non-goals:
 | `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
-| `internal/server` | HTTP routes, error envelope, token checks, status API, land route. | W2, W3 |
+| `internal/server` | HTTP routes, error envelope, token checks, status API, land route. | W2, W3, W4 |
 | `internal/land` | The land (see Land): merge base and the call to motte. | W3 |
-| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential. `internal/mirror/sqlite` is its state store. | W2, W3 |
+| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/mirror/sqlite` is its state store. | W2, W3, W4 |
 | `internal/telemetry` | OTLP trace export. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget, wall-clock analyzer. | W1 |
 | `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
@@ -62,10 +62,13 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_STATE_FILE` | Path of the SQLite file of the state store. Default `WARD_DATA_DIR/state.db`. |
 | `WARD_CLONE_DISK_BUDGET` | Bytes that the clone cache may use. Default 20 GiB. |
 | `WARD_CLONE_IDLE_TTL` | Idle time after which a clone is deleted, as a Go duration. Default `168h`. |
+| `WARD_SEED_MAX_OBJECTS` | Most objects that one push of a seed may add (see Seed). Default 50000. |
+| `WARD_SEED_MAX_BYTES` | Most packed bytes that one push of a seed may add. Default 33554432 (32 MiB). |
+| `WARD_SEED_MAX_INFLATED_BYTES` | Most bytes of whole objects (the sum of the object sizes) that one push of a seed may add. Default 33554432 (32 MiB). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional. Enables OTLP trace export. |
 | `GIT_SSL_CAINFO` | Optional. ward passes it to git, so that git trusts a private certificate authority of a remote. |
 
-The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. The land (see Land) also needs the scope `merge`, so that key must hold `operator`, `read` and `merge`.
+The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. The land (see Land) and the seed (see Seed) also need the scope `merge`, so that key must hold `operator`, `read` and `merge`.
 
 `GET /health` answers 200. `GET /ready` answers 200 while the state store answers a ping. `GET /metrics` serves Prometheus metrics. These routes need no token. A path or method that no route serves answers 404 `not_found` or 405 `method_not_allowed` in the error envelope.
 
@@ -117,6 +120,7 @@ The mirror removes all three. It pushes from one full clone that ward owns, with
 | `credential_file` | Path of a file that holds the password or token of the remote. Required unless `github_app` is set, and then it must be absent. |
 | `github_app` | Optional object `{app_id, installation_id, key_file}`. Makes a GitHub App installation the credential (see GitHub App credential). It excludes `credential_file` and `username`. |
 | `prune_unknown` | Optional. Default false. See Reconcile. |
+| `seed` | Optional. Default false. When true, ward copies the remote into an unseeded motte repository at the first start of the mirror (see Seed). |
 
 Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. ward resolves `WARD_DATA_DIR`, `WARD_STATE_FILE` and each `credential_file` and `github_app.key_file` to absolute paths at start, because git runs with the clone as its working directory. The service refuses to start on a path that it cannot resolve, on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`, or a `github_app` with an `app_id` or `installation_id` that is not positive or a `key_file` that is not a PEM RSA private key. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
 
@@ -200,6 +204,29 @@ A failed Reconcile leaves the mirror unreconciled and retries with the same back
 
 ward never compares the remote with the state on a timer. A change that someone makes on the remote outside ward stays until the next push of that ref, which the lease catches, or until an operator reconciles.
 
+### Seed
+
+A seed moves the source of truth of a repository from the remote into motte. motte creates a native repository with one ref, `main`, at a root commit with an empty tree. A seed copies the whole history of the remote into that repository once. After it, the mirror runs in its normal direction.
+
+When a seed runs. A seed runs only for a mirror with `seed` true. It runs before the first Reconcile of the mirror, when the state store has no record of the mirror name, and it resumes at a start when the seed record is `started`. It never runs when the seed record is `done`. ward decides this, and gives the worker its seed request, before it starts the worker of the mirror. A worker whose seed is wanted does no Reconcile and no push to the remote until the seed is `done`, whatever dirty refs, pending Reconcile requests or events the state holds. A mirror that the state store already knows and that has no seed record never seeds, so a later `seed` true changes nothing.
+
+Unseeded. A motte repository is unseeded when `GET /v1/vcs/refs` lists exactly one ref, `main`, and its commit has no parent (the object of the commit holds no `parent` line) and its tree is the empty tree (`GET /v1/vcs/commits/{sha}` answers the tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904`). A seed of a repository that is not unseeded, with no seed record, is refused: ward writes nothing to motte or to the remote, the mirror state is `seed_refused` with a log line that says why, and the mirror does no work until the configuration or the repository changes and ward restarts. ward never overwrites a repository of motte from a remote.
+
+Steps.
+
+1. Set the seed record to `started` and the mirror state to `seeding`.
+2. List the remote refs with `git ls-remote`. Fetch every ref that a pattern matches (see Which refs), branches and tags, into the clone as `refs/mirror/<git ref name>`, with the credential of the mirror (a file or a GitHub App token), in batches of 200 refspecs.
+3. Order the refs by the commit time of their tip, oldest first, then by name. For each ref, push to motte over git smart HTTP with a `merge` grant of 15 minutes. `main` has a lease on the commit that motte holds (`--force-with-lease=refs/heads/main:<root>`), and every other ref has a lease on absence, so it is a create. A ref that motte already holds at the tip is skipped, which makes a resumed seed repeat nothing.
+4. Set the seed record to `done`, remove the mirror state `seeding`, count the seed and request a Reconcile. Reconcile finds motte and the remote equal.
+
+A failed step retries with the backoff of Failure and backoff, with the mirror in the state `seeding`. A retry continues where the failed run stopped, and it writes only refs that ward wrote.
+
+Expected values. The state store holds, for each ref of the seed, the value that ward expects motte to hold: `commit`, the last value that ward wrote or found (empty for a ref that must be absent), and `next`, the value of a push that is under way and may have landed. The seed records `main` at the root commit when it starts. Before each push it records `next`, and after the push it records the value as `commit`. At each attempt, before any push, ward compares every ref of motte with these values. A ref that motte holds with a value that is neither `commit` nor `next`, a ref that has no record, or a recorded ref that motte lost, ends the seed as `seed_refused`. The status message names the ref. ward never overwrites a ref of motte that it did not write, and each push has a lease on the value that it expects.
+
+Chunks. A push to motte has limits (see Git smart HTTP of motte): a body of 64 MiB and a pack of 100000 objects. motte also limits the inflated data of a pack (64 MiB). ward keeps each push under `WARD_SEED_MAX_OBJECTS` objects, `WARD_SEED_MAX_BYTES` packed bytes and `WARD_SEED_MAX_INFLATED_BYTES` bytes of whole objects, which default to half of those limits. For one ref, ward lists the commits of its first-parent history that no commit that motte holds reaches. It measures a push with `git rev-list --objects` as the objects, the packed bytes and the sum of the object sizes (`git cat-file --batch-check`) of the commit that no earlier push reaches. It pushes the newest first-parent commit that fits, then repeats from there, so each push moves the ref forward by a fast-forward and holds the objects that the commit reaches through all its parents. The planner finds each commit with a binary search, because the cost grows with the commit. The final push is the tip itself, and an annotated tag object follows its commit. A single commit that does not fit alone is pushed alone, and motte decides. A ref therefore shows intermediate commits in motte while its seed runs, and an event of motte follows each push.
+
+The mirror does no push to the remote while it seeds, and a ref event that arrives during the seed is a trigger that the worker acts on after it.
+
 ### State
 
 The state store holds these records:
@@ -208,6 +235,7 @@ The state store holds these records:
 |---|---|
 | Service | `subscription_id`, `events_cursor`, and `last_seq` for each partition (0 to 63). |
 | Mirror | `name`, set when the first Reconcile of the mirror ends. |
+| Seed | `mirror`, `state` (`started` or `done`), and for each ref of the seed `commit` and `next` (see Seed). |
 | Ref of a mirror | `mirror`, `ref` (stored name), `last_partition`, `last_seq`, `dirty` (boolean), `version`, `dirty_since`, `pushed` (commit, empty, or unset), `attempts`, `next_attempt`, `failure` (class, or empty), `message`, `failure_since`, `pushed_at`. |
 
 A trigger sets `dirty` on the ref record, increments `version`, sets `dirty_since` when the ref was clean, sets `next_attempt` to now, and updates `last_partition` and `last_seq` of the ref record when its event is newer, by `seq` in one partition. `pushed` is unset until a push or a Reconcile gives it a value, and an empty value means that the ref is absent on the remote. A worker clears `dirty` only in the transaction that records a push result, and only when `version` is the value that the worker read before it read the ref, so no trigger arrived since. A trigger that arrives during a push therefore leaves the ref dirty, and the worker acts again. The state is small and holds no secret. The clone cache is not state: ward can lose all of it.
@@ -232,7 +260,7 @@ Read after write. A worker reads the ref from the metadata store of motte, so a 
 
 The remote credential is a file or a GitHub App token (see GitHub App credential). ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process of motte only, never of the remote, (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS`. The helper is the `ward` binary, which git runs with the prompt as its only argument. The environment variables `WARD_ASKPASS_FILE` and `WARD_ASKPASS_USER` tell it to answer the user name or the content of the credential file, so it reads the file at each push.
 
-The URL of the repository is `<WARD_MOTTE_URL>/git/<prefix>/<path>.git`, for the repository text `<prefix>:<path>`. For the calls to the control plane of motte (`/v1/events`, `/v1/subscriptions`) ward signs an `operator` grant with a life of 60 seconds. For `GET /v1/vcs/refs` it uses a `read` grant.
+The URL of the repository is `<WARD_MOTTE_URL>/git/<prefix>/<path>.git`, for the repository text `<prefix>:<path>`. The seed (see Seed) pushes to motte with a `merge` grant of the same life. For the calls to the control plane of motte (`/v1/events`, `/v1/subscriptions`) ward signs an `operator` grant with a life of 60 seconds. For `GET /v1/vcs/refs` it uses a `read` grant.
 
 ### Clone
 
@@ -277,7 +305,7 @@ The class and a short message are in the status. The message never holds a URL, 
 {
   "name": "...",
   "repo": "...",
-  "state": "synced | pending | failing",
+  "state": "synced | pending | failing | seeding | seed_refused",
   "refs": [
     {"ref": "main", "state": "synced", "pushed": "<commit>", "pushed_at": "<RFC 3339>",
      "failure": "", "message": "", "attempts": 0, "failure_since": ""}
@@ -286,18 +314,20 @@ The class and a short message are in the status. The message never holds a URL, 
 }
 ```
 
-A ref is `synced` when it is not dirty, `pending` when it is dirty with no failure, and `failing` when it has a failure class. The mirror takes the worst state of its refs. A mirror that has not finished its first Reconcile is `pending`. A bad `cursor` answers 400 `invalid_body`. A list of refs has at most 1000 entries, with `?cursor=` as the opaque continuation.
+A ref is `synced` when it is not dirty, `pending` when it is dirty with no failure, and `failing` when it has a failure class. The mirror takes the worst state of its refs. A mirror that has not finished its first Reconcile is `pending`. A mirror whose seed runs is `seeding`, and a mirror whose seed was refused is `seed_refused`; both replace the state of the refs. A refused seed adds `message`, the reason. A bad `cursor` answers 400 `invalid_body`. A list of refs has at most 1000 entries, with `?cursor=` as the opaque continuation.
 
 `POST /v1/mirrors/{name}/reconcile` needs an `operator` token and answers 202. It makes the triggers of a Reconcile pass and returns at once.
 
 ### Observability
 
-- Metrics, with names that start with `ward_`: `ward_mirror_pushes_total` (by mirror and result), `ward_mirror_dirty_refs` (by mirror), `ward_mirror_failing_refs` (by mirror and class), `ward_mirror_lag_seconds` (age of the oldest dirty ref, by mirror; the gauges of the state are read from the state store at each scrape), `ward_mirror_clone_bytes`, `ward_mirror_disk_over_budget`, `ward_hook_events_total` (by result) and `ward_http_requests_total` by route.
-- Traces: OTLP, with the endpoint from the environment and no vendor in the code. Span names start with `ward.mirror.` for the work (`ward.mirror.fetch`, `ward.mirror.push`).
+- Metrics, with names that start with `ward_`: `ward_mirror_pushes_total` (by mirror and result), `ward_mirror_dirty_refs` (by mirror), `ward_mirror_failing_refs` (by mirror and class), `ward_mirror_lag_seconds` (age of the oldest dirty ref, by mirror; the gauges of the state are read from the state store at each scrape), `ward_mirror_seeds_total` (by mirror and result: `seeded`, `refused` or `failed`), `ward_mirror_clone_bytes`, `ward_mirror_disk_over_budget`, `ward_hook_events_total` (by result) and `ward_http_requests_total` by route.
+- Traces: OTLP, with the endpoint from the environment and no vendor in the code. Span names start with `ward.mirror.` for the work (`ward.mirror.fetch`, `ward.mirror.push`, `ward.mirror.seed`, `ward.mirror.seed.push`).
 - Logs: JSON. A log line never holds a grant, a token, the hook secret, a remote credential, a remote URL or an event body.
 - Instrumentation is additive. It never changes behavior or errors.
 
 ### Tests
+
+The seed contract tests use a fresh motte repository and a remote with `main`, a branch and an annotated tag. They cover: a seed that copies every matching ref, the state `seeding` while the remote answers slowly, a mirror of a new motte commit after the seed, no second seed after a restart, a refusal when motte already has history, a restart of a half-done seed that writes nothing to the remote, a refusal when a caller moved a ref of motte between attempts, a fetch with a GitHub App token, and a long ref that `WARD_SEED_MAX_OBJECTS` splits into several pushes, and compressible files that `WARD_SEED_MAX_INFLATED_BYTES` splits.
 
 The GitHub App contract tests use a fake token endpoint that checks the signature of the JWT with the public key and the claims, and a remote that accepts only the token that the endpoint issued last as the HTTP Basic password. They cover a push with a token, the cache across pushes, a refresh after the cached token nears its expiry, and a 401 from the endpoint. Contract tests start ward against a real motte (the `testserver` package of motte, which does not run the delivery worker) and a bare git repository that `git http-backend` serves over HTTP as the remote. A test reads the ref events from `GET /v1/events` and delivers them to the receiver with a real signature, as motte would, and it can drop an event to make a gap. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock: a test that checks the backoff replaces the clock and moves it, and the other tests wait for the report of a finished unit of work, never for time.
 

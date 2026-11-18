@@ -28,7 +28,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $out := list -}}
 {{- range .Values.mirrors -}}
 {{- $dir := printf "/var/run/ward/mirrors/%s" .name -}}
-{{- $e := dict "name" .name "repo" .repo "remote" .remote "refs" .refs "prune_unknown" (default false .pruneUnknown) -}}
+{{- $e := dict "name" .name "repo" .repo "remote" .remote "refs" .refs "prune_unknown" (default false .pruneUnknown) "seed" (default false .seed) -}}
 {{- if and .credential .githubApp }}{{ fail (printf "mirror %s: set only one of credential and githubApp" .name) }}{{ end -}}
 {{- if .credential -}}
 {{- $_ := set $e "credential_file" (printf "%s/credential" $dir) -}}

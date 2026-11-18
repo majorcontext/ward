@@ -11,6 +11,7 @@ type metrics struct {
 	reg        *prometheus.Registry
 	pushes     *prometheus.CounterVec
 	hooks      *prometheus.CounterVec
+	seeds      *prometheus.CounterVec
 	cloneBytes prometheus.Gauge
 	overBudget prometheus.Gauge
 }
@@ -20,10 +21,11 @@ func newMetrics(store Store, clock Clock) *metrics {
 		reg:        prometheus.NewRegistry(),
 		pushes:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "ward_mirror_pushes_total", Help: "Ref actions by mirror and result."}, []string{"mirror", "result"}),
 		hooks:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "ward_hook_events_total", Help: "Delivered events by result."}, []string{"result"}),
+		seeds:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "ward_mirror_seeds_total", Help: "Seeds by mirror and result."}, []string{"mirror", "result"}),
 		cloneBytes: prometheus.NewGauge(prometheus.GaugeOpts{Name: "ward_mirror_clone_bytes", Help: "Bytes of the clone cache."}),
 		overBudget: prometheus.NewGauge(prometheus.GaugeOpts{Name: "ward_mirror_disk_over_budget", Help: "1 while the clone cache is over its budget."}),
 	}
-	m.reg.MustRegister(m.pushes, m.hooks, m.cloneBytes, m.overBudget, &statsCollector{store: store, clock: clock})
+	m.reg.MustRegister(m.pushes, m.hooks, m.seeds, m.cloneBytes, m.overBudget, &statsCollector{store: store, clock: clock})
 	return m
 }
 

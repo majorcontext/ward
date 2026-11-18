@@ -24,11 +24,13 @@ type refStatus struct {
 }
 
 type mirrorStatus struct {
-	Name   string      `json:"name"`
-	Repo   string      `json:"repo"`
-	State  string      `json:"state"`
-	Refs   []refStatus `json:"refs,omitempty"`
-	Cursor string      `json:"cursor,omitempty"`
+	Name  string `json:"name"`
+	Repo  string `json:"repo"`
+	State string `json:"state"`
+	// Message says why a seed was refused.
+	Message string      `json:"message,omitempty"`
+	Refs    []refStatus `json:"refs,omitempty"`
+	Cursor  string      `json:"cursor,omitempty"`
 }
 
 func stamp(t time.Time) string {
@@ -68,6 +70,9 @@ func (s *Server) summary(ctx context.Context, en mirror.Entry) (mirrorStatus, er
 		if x.Mirror == en.Name {
 			st.State = mirrorState(x)
 		}
+	}
+	if seed, msg := s.d.Engine.SeedState(en.Name); seed != "" {
+		st.State, st.Message = seed, msg
 	}
 	return st, nil
 }

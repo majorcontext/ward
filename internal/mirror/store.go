@@ -37,6 +37,10 @@ type Ref struct {
 	PushedAt      time.Time
 }
 
+// SeedRef is the motte value that a seed expects for a ref. Commit is the last value that ward wrote or found (empty for
+// absence). Next is the value of a push that may or may not have landed (empty when none is under way).
+type SeedRef struct{ Commit, Next string }
+
 // Service is the state that belongs to the process and not to a mirror.
 type Service struct {
 	SubscriptionID string
@@ -88,6 +92,12 @@ type Store interface {
 	SetPushed(ctx context.Context, mirror, ref, pushed string) error
 	// Reconciled triggers each ref of targets, sets its pushed value, and records the mirror.
 	Reconciled(ctx context.Context, mirror string, targets map[string]string, now time.Time) error
+	// Seed returns the seed record of a mirror: empty, started or done.
+	Seed(ctx context.Context, mirror string) (string, error)
+	SetSeed(ctx context.Context, mirror, state string) error
+	// SeedRefs returns what a seed expects motte to hold for each ref it has written or may write.
+	SeedRefs(ctx context.Context, mirror string) (map[string]SeedRef, error)
+	SetSeedRef(ctx context.Context, mirror, ref string, r SeedRef) error
 	HasMirror(ctx context.Context, name string) (bool, error)
 	StateRefs(ctx context.Context, mirror string) ([]string, error)
 	Refs(ctx context.Context, mirror, after string, limit int) ([]Ref, error)
