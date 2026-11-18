@@ -217,3 +217,22 @@ func TestSeedBoundsTheInflatedSizeOfEachPush(t *testing.T) {
 		t.Fatalf("main moved %d times, want 3 pushes of one 1 MiB file", main)
 	}
 }
+
+func TestSeedRecoversFromACorruptClone(t *testing.T) {
+	h := newHarness(t)
+	h.fillRemote(6, 0)
+	h.skip()
+	clk := newFakeClock(func() { h.note("timer", "") })
+	h.partialSeed(clk)
+	objects, _ := filepath.Glob(filepath.Join(h.dataDir, "clones", "*.git", "objects", "??", "*"))
+	for _, o := range objects {
+		_ = os.Chmod(o, 0o644)
+		if err := os.WriteFile(o, []byte("corrupt"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.limitPushes.Store(false)
+	clk.advance(10 * time.Minute)
+	h.waitFor("the seed", func() bool { return h.count("seed") > 0 })
+	h.wantSeeded()
+}

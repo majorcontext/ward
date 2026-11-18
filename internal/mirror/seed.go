@@ -153,10 +153,26 @@ func (e *Engine) seed(ctx context.Context, en Entry) (err error) {
 	return nil
 }
 
+// copyRemote runs the copy under the lock of the clone. A git failure that is neither the network nor motte nor the
+// remote deletes the clone and runs the copy once more, as a batch does.
 func (e *Engine) copyRemote(ctx context.Context, en Entry, motteRefs []api.Ref) error {
 	lock := e.repos.get(en.Repo)
 	lock.Lock()
 	defer lock.Unlock()
+	err := e.copyOnce(ctx, en, motteRefs)
+	if err != nil && localGitFailure(err) {
+		e.wipeClone(en.Repo)
+		err = e.copyOnce(ctx, en, motteRefs)
+	}
+	return err
+}
+
+func localGitFailure(err error) bool {
+	var ge *gitError
+	return errors.As(err, &ge) && !transportFailure(err) && classifyRemote(err) == ClassLocal
+}
+
+func (e *Engine) copyOnce(ctx context.Context, en Entry, motteRefs []api.Ref) error {
 	clone, err := e.ensureClone(ctx, en.Repo)
 	if err != nil {
 		return err
