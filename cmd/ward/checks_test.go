@@ -5,11 +5,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/majorcontext/motte/client"
+
+	"github.com/majorcontext/ward/internal/check"
+	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
 )
 
 func TestLandWaitsForAPassAndThenLandsTheCheckedTree(t *testing.T) {
@@ -354,5 +358,31 @@ func TestLandReadEndsAtOnceForAnOldStateAtAChangeOrWhenTheWaitEnds(t *testing.T)
 	p.answer(req, "pass", "ok")
 	if got := <-changed; got.State != "landing" && got.State != "landed" {
 		t.Fatalf("a wait answered %+v after the state changed", got)
+	}
+}
+
+func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *testing.T) {
+	h, run := newHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{runner: run})
+	base := h.seedChecked(unitChecks)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	l := h.postLand(p, "main", "feature/x", nil)
+	req := run.next()
+	h.awaitLand(p, l.ID, "checking")
+	p.stop()
+	st, err := mirrorsqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.AddResult(t.Context(), check.Result{RequestID: req.RequestID, Repo: req.Repo, Tree: req.Tree, Hash: req.CheckHash, Env: req.Env, Status: check.StatusFail, Summary: "boom"})
+	_ = st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p = h.startWard(wardOpts{runner: run})
+	failed := h.awaitLand(p, l.ID, "failed")
+	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" || len(run.reqs) != 0 {
+		t.Fatalf("land = %+v, %d new requests: a fail from before the restart must end the land", failed, len(run.reqs))
 	}
 }

@@ -147,7 +147,7 @@ func (s *Service) check(ctx context.Context, reader *client.Client, l *Land, tip
 			return s.refusal(check.ErrNoRunner)
 		}
 	}
-	if l.State != Checking || l.Tree != tree || l.Mark == 0 {
+	if l.State != Checking || l.Tree != tree {
 		if l.Mark, err = s.checks.Mark(ctx); err != nil {
 			return s.refusal(err)
 		}
