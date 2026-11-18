@@ -125,6 +125,13 @@ func (c *Config) loadMirrorEnv(getenv func(string) string) error {
 		}
 		c.Mirror.SeedMaxBytes = n
 	}
+	if v := getenv("WARD_SEED_MAX_INFLATED_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return errors.New("WARD_SEED_MAX_INFLATED_BYTES must be a positive number of bytes")
+		}
+		c.Mirror.SeedMaxInflated = n
+	}
 	return nil
 }
 

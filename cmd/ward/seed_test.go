@@ -5,17 +5,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // fillRemote gives the remote main with n commits, a branch and an annotated tag, and returns the tip of main.
-func (h *harness) fillRemote(n int) string {
+func (h *harness) fillRemote(n, size int) string {
 	h.t.Helper()
 	src := h.t.TempDir()
 	gitIn(h.t, src, "init", "-q", "-b", "main")
 	for i := range n {
 		name := fmt.Sprintf("f%d.txt", i)
-		if err := os.WriteFile(filepath.Join(src, name), []byte(name), 0o644); err != nil {
+		content := name
+		if size > 0 {
+			content = name + strings.Repeat("0", size)
+		}
+		if err := os.WriteFile(filepath.Join(src, name), []byte(content), 0o644); err != nil {
 			h.t.Fatal(err)
 		}
 		gitIn(h.t, src, "add", name)
@@ -71,7 +77,7 @@ func (h *harness) wantSeeded() {
 
 func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(2)
+	h.fillRemote(2, 0)
 	hold, release := h.remote.hold()
 	p := h.startWard(wardOpts{refs: seedRefs, seed: true, noWait: true})
 	<-hold
@@ -106,7 +112,7 @@ func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 
 func TestSeedIsRefusedWhenTheMotteRepositoryHasHistory(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(2)
+	h.fillRemote(2, 0)
 	h.push("feature/a", h.commit("a.txt", "1"), false)
 	before := h.motteRefs()
 	p := h.startWard(wardOpts{refs: seedRefs, seed: true, noWait: true})
@@ -124,7 +130,7 @@ func TestSeedIsRefusedWhenTheMotteRepositoryHasHistory(t *testing.T) {
 
 func TestSeedFetchesWithAnInstallationToken(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(1)
+	h.fillRemote(1, 0)
 	clk := newFakeClock(func() { h.note("timer", "") })
 	gh := newFakeGitHub(t, h.remote, clk)
 	h.startWard(wardOpts{refs: seedRefs, seed: true, clock: clk, app: gh})
@@ -136,7 +142,7 @@ func TestSeedFetchesWithAnInstallationToken(t *testing.T) {
 
 func TestSeedPushesALongRefInSeveralPushes(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(6)
+	h.fillRemote(6, 0)
 	h.skip()
 	h.startWard(wardOpts{refs: seedRefs, seed: true, seedObjects: "7"})
 	h.wantSeeded()
@@ -148,5 +154,66 @@ func TestSeedPushesALongRefInSeveralPushes(t *testing.T) {
 	}
 	if main != 3 {
 		t.Fatalf("main moved %d times, want 3 pushes of 2 commits", main)
+	}
+}
+
+// partialSeed starts a seed whose second push to motte fails, and returns when it waits to retry.
+func (h *harness) partialSeed(clk *fakeClock) *wardProc {
+	h.t.Helper()
+	h.proxy()
+	h.pushesLeft.Store(1)
+	h.limitPushes.Store(true)
+	p := h.startWard(wardOpts{refs: seedRefs, seed: true, seedObjects: "7", proxied: true, clock: clk, noWait: true})
+	h.waitFor("a failed seed", func() bool { return clk.pending() >= 1 })
+	return p
+}
+
+func TestSeedResumeWritesNothingToTheRemoteBeforeItFinishes(t *testing.T) {
+	h := newHarness(t)
+	h.fillRemote(6, 0)
+	h.skip()
+	h.remote.logPushes()
+	p := h.partialSeed(newFakeClock(func() { h.note("timer", "") }))
+	h.relay(p)
+	p.stop()
+	h.limitPushes.Store(false)
+	p = h.startWard(wardOpts{refs: seedRefs, seed: true, seedObjects: "7", proxied: true})
+	h.waitFor("the seed", func() bool { return h.count("seed") > 0 })
+	h.waitFor("a synced mirror", func() bool { return p.status().State == "synced" })
+	h.wantSeeded()
+	if log := h.remote.pushLog(); log != "" {
+		t.Fatalf("the remote was written during the seed:\n%s", log)
+	}
+}
+
+func TestSeedResumeNeverOverwritesARefThatMotteMovedMeanwhile(t *testing.T) {
+	h := newHarness(t)
+	h.fillRemote(6, 0)
+	clk := newFakeClock(func() { h.note("timer", "") })
+	p := h.partialSeed(clk)
+	caller := h.commit("c.txt", "caller")
+	h.push("feature/x", caller, false)
+	h.limitPushes.Store(false)
+	clk.advance(10 * time.Minute)
+	h.waitFor("a refused seed", func() bool { return p.status().State == "seed_refused" })
+	if got := h.motteRefs()["feature/x"]; got != caller {
+		t.Fatalf("feature/x = %s, want the commit of the caller %s", got, caller)
+	}
+}
+
+func TestSeedBoundsTheInflatedSizeOfEachPush(t *testing.T) {
+	h := newHarness(t)
+	h.fillRemote(3, 1<<20)
+	h.skip()
+	h.startWard(wardOpts{refs: seedRefs, seed: true, seedInflated: fmt.Sprint(3 << 19)})
+	h.wantSeeded()
+	main := 0
+	for _, ev := range h.events() {
+		if ev.Ref == "main" {
+			main++
+		}
+	}
+	if main != 3 {
+		t.Fatalf("main moved %d times, want 3 pushes of one 1 MiB file", main)
 	}
 }

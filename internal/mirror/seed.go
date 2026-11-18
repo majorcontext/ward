@@ -23,29 +23,56 @@ const (
 	// DefaultSeedMaxObjects and DefaultSeedMaxBytes are the size of one seed push. Both are below the limits of a push to motte.
 	DefaultSeedMaxObjects = 50000
 	DefaultSeedMaxBytes   = 32 << 20
+	// DefaultSeedMaxInflated bounds the whole size of the objects of one seed push, as motte bounds its inflated data.
+	DefaultSeedMaxInflated = 32 << 20
 
 	emptyTree     = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	fetchBatch    = 200
 	seedFetchSpec = "+%s:%s"
 )
 
-var errSeedRefused = errors.New("the motte repository already has history")
+var errSeedRefused = errors.New("seed refused")
 
-func (e *Engine) setSeedState(name, state string) {
+func (e *Engine) setSeedState(name, state, message string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if state == "" {
 		delete(e.seedStates, name)
 		return
 	}
-	e.seedStates[name] = state
+	e.seedStates[name] = seedStatus{state, message}
 }
 
-// SeedState returns StateSeeding or StateSeedRefused while a seed of the mirror runs or was refused, else empty.
-func (e *Engine) SeedState(name string) string {
+type seedStatus struct{ state, message string }
+
+// SeedState returns StateSeeding or StateSeedRefused while a seed of the mirror runs or was refused, else empty, and the
+// reason of a refusal.
+func (e *Engine) SeedState(name string) (state, message string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.seedStates[name]
+	st := e.seedStates[name]
+	return st.state, st.message
+}
+
+func refusal(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errSeedRefused, fmt.Sprintf(format, args...))
+}
+
+// checkSeedRefs refuses when a ref of motte holds a value that the seed neither wrote nor found at its start.
+func checkSeedRefs(motte []api.Ref, expect map[string]SeedRef) error {
+	cur := map[string]string{}
+	for _, r := range motte {
+		cur[r.Name] = r.Commit
+		if x, ok := expect[r.Name]; !ok || (r.Commit != x.Commit && r.Commit != x.Next) {
+			return refusal("the motte ref %s changed since the seed wrote it", r.Name)
+		}
+	}
+	for name, x := range expect {
+		if x.Commit != "" && cur[name] == "" {
+			return refusal("the motte ref %s was deleted since the seed wrote it", name)
+		}
+	}
+	return nil
 }
 
 // unseeded reports whether the refs are the ones that a new repository of motte has: main at a root commit with an empty tree.
@@ -69,13 +96,15 @@ func unseeded(ctx context.Context, r *client.Client, refs []api.Ref) (bool, erro
 
 // seed copies the matching refs of the remote into the motte repository, once.
 func (e *Engine) seed(ctx context.Context, en Entry) (err error) {
-	e.setSeedState(en.Name, StateSeeding)
+	e.setSeedState(en.Name, StateSeeding, "")
 	defer func() {
 		switch {
 		case err == nil:
-			e.setSeedState(en.Name, "")
+			e.setSeedState(en.Name, "", "")
 		case errors.Is(err, errSeedRefused):
-			e.setSeedState(en.Name, StateSeedRefused)
+			e.m.seeds.WithLabelValues(en.Name, "refused").Inc()
+			e.setSeedState(en.Name, StateSeedRefused, err.Error())
+			e.notify("seed_refused", en.Name)
 		}
 	}()
 	reader := e.motte.reader(en.Repo)
@@ -93,12 +122,21 @@ func (e *Engine) seed(ctx context.Context, en Entry) (err error) {
 			return err
 		}
 		if !ok {
-			e.m.seeds.WithLabelValues(en.Name, "refused").Inc()
-			return errSeedRefused
+			return refusal("the motte repository already has history")
+		}
+		if err := e.store.SetSeedRef(ctx, en.Name, "main", SeedRef{Commit: refs[0].Commit}); err != nil {
+			return err
 		}
 		if err := e.store.SetSeed(ctx, en.Name, seedStarted); err != nil {
 			return err
 		}
+	}
+	expect, err := e.store.SeedRefs(ctx, en.Name)
+	if err != nil {
+		return err
+	}
+	if err := checkSeedRefs(refs, expect); err != nil {
+		return err
 	}
 	sctx, end := e.span(ctx, "ward.mirror.seed")
 	err = e.copyRemote(sctx, en, refs)
@@ -146,7 +184,7 @@ func (e *Engine) copyRemote(ctx context.Context, en Entry, motteRefs []api.Ref) 
 		if current[stored] == t.Tip {
 			continue
 		}
-		if err := e.pushSeedRef(ctx, en, clone, t, current[stored], &held); err != nil {
+		if err := e.pushSeedRef(ctx, en, clone, t, stored, current[stored], &held); err != nil {
 			return err
 		}
 	}
@@ -198,7 +236,7 @@ func (e *Engine) fetchRemoteRefs(ctx context.Context, en Entry, clone string) ([
 }
 
 // pushSeedRef moves one ref of motte from lease to the tip in chunks. held lists the commits that motte holds.
-func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seedTip, lease string, held *[]string) error {
+func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seedTip, stored, lease string, held *[]string) error {
 	var chain []string
 	commit := e.git.peel(ctx, clone, t.Tip)
 	if commit != "" {
@@ -213,12 +251,12 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seed
 		if from >= 0 {
 			not = append(not, chain[from])
 		}
-		n, size, err := e.git.newObjects(ctx, clone, chain[to], not)
+		ok, err := e.git.fitsPush(ctx, clone, chain[to], not, e.cfg.SeedMaxObjects, e.cfg.SeedMaxBytes, e.cfg.SeedMaxInflated)
 		if err != nil {
 			probeErr = err
 			return true
 		}
-		return n <= e.cfg.SeedMaxObjects && size <= e.cfg.SeedMaxBytes
+		return ok
 	}
 	var steps []string
 	for _, i := range planChunks(len(chain), fits) {
@@ -235,6 +273,9 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seed
 		if err != nil {
 			return err
 		}
+		if err := e.store.SetSeedRef(ctx, en.Name, stored, SeedRef{Commit: lease, Next: step}); err != nil {
+			return err
+		}
 		pctx, end := e.span(ctx, "ward.mirror.seed.push")
 		res, err := e.git.push(pctx, clone, e.motte.gitURL(en.Repo), creds, []pushSpec{{Ref: t.Git, Commit: step, Lease: lease, LeaseSet: true}})
 		end()
@@ -243,6 +284,9 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seed
 		}
 		if res[t.Git] != outcomeOK || !hasResult(res, t.Git) {
 			return fmt.Errorf("motte refused the push of %s", t.Git)
+		}
+		if err := e.store.SetSeedRef(ctx, en.Name, stored, SeedRef{Commit: step}); err != nil {
+			return err
 		}
 		lease = step
 		*held = append(*held, step)

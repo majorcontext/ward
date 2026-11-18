@@ -139,6 +139,19 @@ func (r *remote) rejectRef(ref string) {
 	}
 }
 
+// logPushes makes the remote append each ref update to a file. pushLog returns that file.
+func (r *remote) logPushes() {
+	hook := fmt.Sprintf("#!/bin/sh\ncat >> %q\n", filepath.Join(r.dir, "pushes.log"))
+	if err := os.WriteFile(filepath.Join(r.dir, "hooks", "pre-receive"), []byte(hook), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *remote) pushLog() string {
+	out, _ := os.ReadFile(filepath.Join(r.dir, "pushes.log"))
+	return string(out)
+}
+
 func (r *remote) allowAll() { _ = os.Remove(filepath.Join(r.dir, "hooks", "pre-receive")) }
 
 type harness struct {
@@ -161,8 +174,11 @@ type harness struct {
 	ln         *net.TCPListener
 	motteProxy *httptest.Server
 	motteGate  atomic.Pointer[gate]
-	mu         sync.Mutex
-	counts     map[string]int
+	// limitPushes makes the proxy answer 503 to a push of git once pushesLeft pushes passed.
+	limitPushes atomic.Bool
+	pushesLeft  atomic.Int64
+	mu          sync.Mutex
+	counts      map[string]int
 }
 
 func newHarness(t *testing.T) *harness {
@@ -265,6 +281,8 @@ type wardOpts struct {
 	// seed sets seed on the mirror. seedObjects lowers the object limit of one seed push.
 	seed        bool
 	seedObjects string
+	// seedInflated lowers the inflated byte limit of one seed push.
+	seedInflated string
 }
 
 type wardProc struct {
@@ -323,7 +341,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_MOTTE_KEY_FILE": h.writeFile("motte.key", seed), "WARD_PUBLIC_URL": "http://" + h.addr,
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
 		"WARD_MIRRORS": string(entries), "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
-		"WARD_SEED_MAX_OBJECTS": o.seedObjects,
+		"WARD_SEED_MAX_OBJECTS": o.seedObjects, "WARD_SEED_MAX_INFLATED_BYTES": o.seedInflated,
 	}
 	adjust := func(c *config.Config) {
 		c.Mirror.Mirrors[0].Remote = h.remote.URL
@@ -597,6 +615,10 @@ func (h *harness) proxy() *httptest.Server {
 		if g := h.motteGate.Load(); g != nil && r.URL.Path == "/v1/subscriptions" {
 			g.entered <- struct{}{}
 			<-g.release
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") && h.limitPushes.Load() && h.pushesLeft.Add(-1) < 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
 		}
 		rp.ServeHTTP(w, r)
 	}))

@@ -36,6 +36,8 @@ type Config struct {
 	// SeedMaxObjects and SeedMaxBytes bound one push of a seed. Zero means the default.
 	SeedMaxObjects int
 	SeedMaxBytes   int64
+	// SeedMaxInflated bounds the sum of the object sizes of one push of a seed.
+	SeedMaxInflated int64
 	// Askpass is the program that git runs for the remote credential. It is the ward binary.
 	Askpass string
 }
@@ -44,7 +46,7 @@ type Config struct {
 type Options struct {
 	Clock  Clock
 	Logger *slog.Logger
-	// Done is called after a unit of work ends: kind is batch, reconcile, catchup, reset or init, and mirror is empty
+	// Done is called after a unit of work ends: kind is batch, reconcile, catchup, reset, init, seed or seed_refused, and mirror is empty
 	// for work that belongs to no mirror. It must not block.
 	Done func(kind, mirror string)
 }
@@ -70,7 +72,7 @@ type Engine struct {
 	// pending holds the Reconcile requests that came before the worker of a mirror started.
 	pending map[string]bool
 	// seedStates holds StateSeeding or StateSeedRefused for each mirror that has one.
-	seedStates map[string]string
+	seedStates map[string]seedStatus
 }
 
 type wants struct{ init, catchup, reset bool }
@@ -88,6 +90,9 @@ func New(cfg Config, store Store, opts Options) *Engine {
 	}
 	if cfg.SeedMaxObjects == 0 {
 		cfg.SeedMaxObjects = DefaultSeedMaxObjects
+	}
+	if cfg.SeedMaxInflated == 0 {
+		cfg.SeedMaxInflated = DefaultSeedMaxInflated
 	}
 	if cfg.SeedMaxBytes == 0 {
 		cfg.SeedMaxBytes = DefaultSeedMaxBytes
@@ -107,7 +112,7 @@ func New(cfg Config, store Store, opts Options) *Engine {
 		workers: map[string]*worker{},
 		pending: map[string]bool{},
 
-		seedStates: map[string]string{},
+		seedStates: map[string]seedStatus{},
 	}
 	for _, en := range cfg.Mirrors {
 		e.entries[en.Name] = en
@@ -234,7 +239,7 @@ func (e *Engine) initialize(ctx context.Context, wg *sync.WaitGroup) error {
 	if err := e.ensureSubscription(ctx); err != nil {
 		return fmt.Errorf("subscription: %w", err)
 	}
-	e.startWorkers(ctx, wg)
+	first := map[string]func(*worker){}
 	for _, en := range e.cfg.Mirrors {
 		known, err := e.store.HasMirror(ctx, en.Name)
 		if err != nil {
@@ -248,30 +253,39 @@ func (e *Engine) initialize(ctx context.Context, wg *sync.WaitGroup) error {
 		}
 		switch {
 		case en.Seed && seedState != seedDone && (seedState == seedStarted || !known):
-			e.workers[en.Name].requestSeed()
+			first[en.Name] = (*worker).requestSeed
 		case !known:
-			e.workers[en.Name].requestReconcile()
+			first[en.Name] = (*worker).requestReconcile
 		}
 	}
+	e.startWorkers(ctx, wg, first)
 	e.request(func(w *wants) { w.catchup = true })
 	e.notify("init", "")
 	return nil
 }
 
-func (e *Engine) startWorkers(ctx context.Context, wg *sync.WaitGroup) {
+// startWorkers starts the worker of each mirror that has none. first holds the request that a worker gets before it
+// runs, so that no worker acts on the remote before its seed is wanted.
+func (e *Engine) startWorkers(ctx context.Context, wg *sync.WaitGroup, first map[string]func(*worker)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, en := range e.cfg.Mirrors {
-		if e.workers[en.Name] != nil {
-			continue
+		w := e.workers[en.Name]
+		fresh := w == nil
+		if fresh {
+			w = newWorker(e, en)
+			e.workers[en.Name] = w
 		}
-		w := newWorker(e, en)
-		e.workers[en.Name] = w
-		if e.pending[en.Name] {
-			delete(e.pending, en.Name)
-			w.requestReconcile()
+		if req := first[en.Name]; req != nil {
+			req(w)
 		}
-		wg.Go(func() { w.run(ctx) })
+		if fresh {
+			if e.pending[en.Name] {
+				delete(e.pending, en.Name)
+				w.requestReconcile()
+			}
+			wg.Go(func() { w.run(ctx) })
+		}
 	}
 }
 

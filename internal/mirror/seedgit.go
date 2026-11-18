@@ -16,20 +16,43 @@ func revRange(tip string, not []string) string {
 	return b.String()
 }
 
-// newObjects counts the objects and the packed bytes that tip reaches and no commit of not reaches.
-func (g *gitRunner) newObjects(ctx context.Context, clone, tip string, not []string) (int, int64, error) {
+// fitsPush reports whether the objects that tip reaches and no commit of not reaches fit in one push: at most
+// maxObjects objects, maxPacked packed bytes and maxInflated bytes of whole objects. The cheap counts run first.
+func (g *gitRunner) fitsPush(ctx context.Context, clone, tip string, not []string, maxObjects int, maxPacked, maxInflated int64) (bool, error) {
 	in := revRange(tip, not)
 	out, err := g.runIn(ctx, clone, gitCreds{}, in, "rev-list", "--stdin", "--objects", "--count")
 	if err != nil {
-		return 0, 0, err
+		return false, err
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(out))
+	if n, _ := strconv.Atoi(strings.TrimSpace(out)); n > maxObjects {
+		return false, nil
+	}
 	out, err = g.runIn(ctx, clone, gitCreds{}, in, "rev-list", "--stdin", "--objects", "--disk-usage")
 	if err != nil {
-		return 0, 0, err
+		return false, err
 	}
-	size, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	return n, size, nil
+	if size, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64); size > maxPacked {
+		return false, nil
+	}
+	list, err := g.runIn(ctx, clone, gitCreds{}, in, "rev-list", "--stdin", "--objects")
+	if err != nil {
+		return false, err
+	}
+	var names strings.Builder
+	for line := range strings.Lines(list) {
+		sha, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		names.WriteString(sha + "\n")
+	}
+	sizes, err := g.runIn(ctx, clone, gitCreds{}, names.String(), "cat-file", "--batch-check=%(objectsize)")
+	if err != nil {
+		return false, err
+	}
+	var total int64
+	for line := range strings.Lines(sizes) {
+		n, _ := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
+		total += n
+	}
+	return total <= maxInflated, nil
 }
 
 // firstParents lists the commits of the first-parent history of tip that no commit of not reaches, oldest first.
