@@ -16,6 +16,7 @@ import (
 
 	"github.com/majorcontext/motte/api"
 
+	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
@@ -27,6 +28,7 @@ const maxHookBody = 64 << 10
 type Deps struct {
 	Engine   *mirror.Engine
 	Land     *land.Service
+	Checks   *check.Manager
 	Store    mirror.Store
 	Verifier *token.Verifier
 	Registry *prometheus.Registry
@@ -64,6 +66,7 @@ func New(d Deps) *Server {
 	s.mux.HandleFunc("GET /v1/mirrors/{name}", s.getMirror)
 	s.mux.HandleFunc("POST /v1/mirrors/{name}/reconcile", s.reconcile)
 	s.mux.HandleFunc("POST /v1/lands", s.land)
+	s.mux.HandleFunc("POST /v1/results", s.postResult)
 	return s
 }
 

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
@@ -86,7 +87,16 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	}
 	defer func() { _ = store.Close() }()
 
-	deps := server.Deps{Store: store, Verifier: token.NewVerifier(cfg.TrustedKeys...), Logger: opts.Logger, Land: land.New(cfg.Land, nil)}
+	var clock check.Clock
+	if opts.Clock != nil {
+		clock = opts.Clock
+	}
+	checks := check.New(store, cfg.Runners, clock, opts.Logger)
+	if err := checks.Start(ctx); err != nil {
+		return err
+	}
+	defer func() { cancelAll(); checks.Wait() }()
+	deps := server.Deps{Store: store, Verifier: token.NewVerifier(cfg.TrustedKeys...), Logger: opts.Logger, Land: land.New(cfg.Land, nil), Checks: checks}
 	var engine *mirror.Engine
 	if len(cfg.Mirror.Mirrors) > 0 {
 		engine = mirror.New(cfg.Mirror, store, opts)

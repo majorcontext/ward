@@ -45,7 +45,7 @@ func TestVerify(t *testing.T) {
 			}
 		})
 	}
-	for _, scope := range []token.Scope{token.ScopeRead, token.ScopeLand} {
+	for _, scope := range []token.Scope{token.ScopeRead, token.ScopeLand, token.ScopeCheck} {
 		if _, err := good.Mint(token.Claims{Scope: scope, Exp: 2000}); err == nil {
 			t.Fatalf("a %s token with no repo was minted", scope)
 		}
