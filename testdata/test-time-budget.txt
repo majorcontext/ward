@@ -7,3 +7,7 @@
 
 leaf 10
 package default 10
+
+# Each contract test of cmd/ward starts a motte server and a git http-backend remote, and runs ward and the git
+# binary against them. Process spawn dominates, so the package needs more than the default.
+package cmd/ward 30
