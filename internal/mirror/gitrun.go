@@ -25,6 +25,8 @@ type gitCreds struct {
 	Header  string
 	AskUser string
 	AskFile string
+	// KeepGC leaves gc.auto at its default, for the explicit maintenance command.
+	KeepGC bool
 }
 
 type gitError struct {
@@ -44,7 +46,10 @@ func (g *gitRunner) env(c gitCreds) []string {
 	if ca := os.Getenv("GIT_SSL_CAINFO"); ca != "" {
 		env = append(env, "GIT_SSL_CAINFO="+ca)
 	}
-	cfg := [][2]string{{"protocol.version", "2"}, {"credential.helper", ""}, {"gc.auto", "0"}, {"core.askPass", ""}}
+	cfg := [][2]string{{"protocol.version", "2"}, {"credential.helper", ""}, {"core.askPass", ""}}
+	if !c.KeepGC {
+		cfg = append(cfg, [2]string{"gc.auto", "0"})
+	}
 	if c.Header != "" {
 		cfg = append(cfg, [2]string{"http.extraHeader", c.Header})
 	}
@@ -117,7 +122,7 @@ func (g *gitRunner) gc(ctx context.Context, clone string, prune bool) error {
 	if prune {
 		args = []string{"gc", "--prune=now", "--quiet"}
 	}
-	_, err := g.run(ctx, clone, gitCreds{}, args...)
+	_, err := g.run(ctx, clone, gitCreds{KeepGC: true}, args...)
 	return err
 }
 
