@@ -46,3 +46,7 @@ func TestOtherSleep(t *testing.T) {
 	f.Sleep(1)
 	onlyInBubble(nil)
 }
+
+func TestTimeMethodAfterIsNotAWait(t *testing.T) {
+	_ = time.Now().After(time.Now())
+}
