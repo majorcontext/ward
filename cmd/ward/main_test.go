@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/majorcontext/motte/testserver"
 )
 
 // askpassBin answers git like the ward binary does, but starts at once: compiling ward for a test costs more than the tests.
@@ -18,6 +20,29 @@ var askpassBin string
 // bareTemplate is a bare repository that each remote copies, and gitExecPath is the exec path of git. Both are made once,
 // because each test would otherwise start git for them.
 var bareTemplate, workTemplate, gitExecPath string
+
+// sharedMotte is the motte of the tests that need no mirror.
+var sharedMotte *testserver.Server
+
+// mainTB lets testserver start a server for the whole package: it has no test to hold the cleanup.
+type mainTB struct {
+	testing.TB
+	dir string
+}
+
+func (mainTB) Helper() {}
+
+func (b mainTB) TempDir() string {
+	d, err := os.MkdirTemp(b.dir, "motte")
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+
+func (mainTB) Cleanup(func()) {}
+
+func (mainTB) Fatal(args ...any) { panic(fmt.Sprint(args...)) }
 
 const askpassScript = `#!/bin/sh
 case "$1" in
@@ -37,11 +62,15 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	for _, args := range [][]string{{"init", "--bare", "-q", bareTemplate}, {"-C", bareTemplate, "config", "http.receivepack", "true"}, {"init", "-q", workTemplate}} {
+	for _, args := range [][]string{{"init", "--bare", "-q", "--template=", bareTemplate}, {"-C", bareTemplate, "config", "http.receivepack", "true"}, {"init", "-q", "--template=", workTemplate}} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			fmt.Fprintln(os.Stderr, "git", args, err, string(out))
 			os.Exit(1)
 		}
+	}
+	if err := os.Mkdir(filepath.Join(bareTemplate, "hooks"), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	path, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
@@ -49,6 +78,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	gitExecPath = strings.TrimSpace(string(path))
+	sharedMotte = testserver.StartLocal(mainTB{dir: dir})
 	askpassBin = filepath.Join(dir, "askpass")
 	if err := os.WriteFile(askpassBin, []byte(askpassScript), 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)

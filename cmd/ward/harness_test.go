@@ -190,8 +190,20 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return buildHarness(t, testserver.StartLocal(t), newRemote(t))
+}
+
+// newLandHarness is a harness for a test that needs no mirror. It shares the one motte of the package and makes no remote.
+// Each test has a repository of its own on that motte, and no such test reads the events of motte or its subscriptions.
+func newLandHarness(t *testing.T) *harness {
+	t.Helper()
+	return buildHarness(t, sharedMotte, nil)
+}
+
+func buildHarness(t *testing.T, motte *testserver.Server, rem *remote) *harness {
+	t.Helper()
 	t.Parallel()
-	h := &harness{t: t, motte: testserver.StartLocal(t), remote: newRemote(t), dataDir: t.TempDir(), files: t.TempDir(),
+	h := &harness{t: t, motte: motte, remote: rem, dataDir: t.TempDir(), files: t.TempDir(),
 		secret: strings.Repeat("h", 32), notes: make(chan string, 4096), counts: map[string]int{}, landRecord: make(chan struct{}, 4)}
 	h.callerPK, h.callerSK, _ = ed25519.GenerateKey(rand.Reader)
 	path, err := h.motte.Client(h.motte.OperatorGrant(t)).CreateRepo(t.Context(), "widgets", "o1")

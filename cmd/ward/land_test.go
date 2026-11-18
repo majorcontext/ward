@@ -55,7 +55,7 @@ func (h *harness) landBody(branch string, extra map[string]any) []byte {
 }
 
 func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T) {
-	h := newHarness(t)
+	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	feature := h.branchFrom(base, "feature/x", "c.txt", "from the branch\n")
@@ -106,7 +106,7 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 }
 
 func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
-	h := newHarness(t)
+	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
@@ -130,7 +130,7 @@ func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
 }
 
 func TestLandReportsAConflictWithItsPathsAndLeavesTheRefAlone(t *testing.T) {
-	h := newHarness(t)
+	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	h.branchFrom(base, "feature/bad", "a.txt", "branch edit\n")
@@ -151,7 +151,7 @@ func TestLandReportsAConflictWithItsPathsAndLeavesTheRefAlone(t *testing.T) {
 }
 
 func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
-	h := newHarness(t)
+	h := newLandHarness(t)
 	h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	clean := h.branchFrom(base, "feature/clean", "c.txt", "c\n")
@@ -197,7 +197,7 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 }
 
 func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
-	h := newHarness(t)
+	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true, proxied: true})
 	base := h.seedMain()
 	feature := h.branchFrom(base, "feature/x", "c.txt", "c\n")
