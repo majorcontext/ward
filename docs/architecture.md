@@ -18,13 +18,16 @@ Non-goals:
 
 | Component | Responsibility | Phase |
 |---|---|---|
-| `cmd/ward` | Process: configuration, HTTP listener, workers. | W1 (prints its version) |
+| `cmd/ward` | Process: `ward` serves, `ward version` prints the version. It also serves as the `GIT_ASKPASS` helper (see Git access). | W2 |
+| `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
-| `internal/mirror` | The mirror (see Mirror): trigger intake, state, clone cache, push workers. | W2 |
+| `internal/server` | HTTP routes, error envelope, token checks, status API. | W2 |
+| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers. `internal/mirror/sqlite` is its state store. | W2 |
+| `internal/telemetry` | OTLP trace export. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget, wall-clock analyzer. | W1 |
 | Change requests, review, merge queue, CI orchestration, import host | See Planned work. | Not built |
 
-ward imports the public packages of motte: `api` (wire types), `grant` (to sign the grants that ward sends to motte) and `client` (the HTTP client). It never imports an internal package of motte.
+ward imports the public packages of motte: `api` (wire types), `grant` (to sign the grants that ward sends to motte) and `client` (the HTTP client). It never imports an internal package of motte. Tests also import `testserver` and `meta` of motte.
 
 ## Dependency direction
 
@@ -48,20 +51,22 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_DATA_DIR` | Directory of the clone cache. Required. |
 | `WARD_MOTTE_URL` | Base URL of motte. Required. |
 | `WARD_MOTTE_KID` | `kid` that ward puts in the grants that it signs. Required. |
-| `WARD_MOTTE_KEY_FILE` | Path of the Ed25519 private key that signs those grants. Required. |
+| `WARD_MOTTE_KEY_FILE` | Path of the file that holds the Ed25519 private key that signs those grants, as the standard base64 of its 64 bytes or of its 32-byte seed. Required. |
 | `WARD_PUBLIC_URL` | Base URL under which motte reaches ward. The receiver URL is this value plus `/v1/hooks/motte`. Required when a mirror is configured. |
-| `WARD_HOOK_SECRET_FILE` | Path of the file that holds the subscription secret (16 to 256 bytes). Required when a mirror is configured. |
+| `WARD_HOOK_SECRET_FILE` | Path of the file that holds the subscription secret (16 to 256 bytes, with a final line break removed). Required when a mirror is configured. |
 | `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read` and `operator`. The service refuses to start on any other scope text. |
 | `WARD_MIRRORS` | JSON list of mirror entries (see Mirror, Configuration). Optional. |
+| `WARD_STATE_FILE` | Path of the SQLite file of the state store. Default `WARD_DATA_DIR/state.db`. |
 | `WARD_CLONE_DISK_BUDGET` | Bytes that the clone cache may use. Default 20 GiB. |
 | `WARD_CLONE_IDLE_TTL` | Idle time after which a clone is deleted, as a Go duration. Default `168h`. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional. Enables OTLP trace export. |
+| `GIT_SSL_CAINFO` | Optional. ward passes it to git, so that git trusts a private certificate authority of a remote. |
 
 The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. A later feature that lands through motte adds the scope `merge`.
 
 `GET /health` answers 200. `GET /ready` answers 200 while the state store answers a ping. `GET /metrics` serves Prometheus metrics. These routes need no token. A path or method that no route serves answers 404 `not_found` or 405 `method_not_allowed` in the error envelope.
 
-The state store keeps the mirror state (see Mirror, State). It is a transactional store behind an interface. The backend is chosen when the mirror is built, and the choice updates this section.
+The state store keeps the mirror state (see Mirror, State). It is a transactional store behind the interface `mirror.Store`. The backend is SQLite, through a pure-Go driver, so the binary needs no cgo. It runs in WAL mode on one connection, and each write is one transaction. `WARD_STATE_FILE` should name a durable path: the clone cache may be lost, but the state should not be. When no mirror is configured, `/v1/mirrors` lists none and the hook routes answer 404 `not_found`.
 
 ## Caller token
 
@@ -109,7 +114,7 @@ The mirror removes all three. It pushes from one full clone that ward owns, with
 | `credential_file` | Path of a file that holds the password or token of the remote. Required. |
 | `prune_unknown` | Optional. Default false. See Reconcile. |
 
-Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. The service refuses to start on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
+Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. ward resolves `WARD_DATA_DIR`, `WARD_STATE_FILE` and each `credential_file` to absolute paths at start, because git runs with the clone as its working directory. The service refuses to start on a path that it cannot resolve, on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
 
 ### Which refs
 
@@ -129,13 +134,13 @@ A trigger says that one ref of one repository may have changed. The mirror reads
 
 ward has no timer that starts a poll or a check. The only waits are the retry backoff of a failed action (see Failure and backoff). Every read of motte or of the remote starts from an event, a start of the process, a stale rejection or an operator request.
 
-Delivery. At start, ward lists `GET /v1/subscriptions`. If no subscription has its receiver URL, ward registers one with `POST /v1/subscriptions` and `{url, secret}`. It sets no `repo` filter, so one subscription serves every mirror, and the events of a partition reach the receiver with no gap that a filter would make. It keeps the subscription `id` and the `cursor` of the answer in the state store. The code of motte seeds the cursors of a new subscription with the newest `seq` of every partition, so the subscription carries no history, and the first event that it delivers in a partition has the `seq` after that head.
+Delivery. At start, ward lists `GET /v1/subscriptions`. If no subscription has its receiver URL and the `id` that the state store holds, ward deletes any subscription that has the receiver URL (the state was lost) and registers one with `POST /v1/subscriptions` and `{url, secret}`. It sets no `repo` filter, so one subscription serves every mirror, and the events of a partition reach the receiver with no gap that a filter would make. It keeps the subscription `id` in the state store. It keeps the `cursor` of the answer as `events_cursor` only when the state store holds none, so a catch-up still reads the events that a deleted subscription would have delivered. The code of motte seeds the cursors of a new subscription with the newest `seq` of every partition, so the subscription carries no history, and the first event that it delivers in a partition has the `seq` after that head.
 
 The receiver does these steps:
 
-1. Read the body, at most 64 KiB.
+1. Read the body, at most 64 KiB. A larger body answers 400 `invalid_body`.
 2. Compute `sha256=` and the lowercase hex HMAC-SHA256 of the exact body under the secret, and compare it with `X-Motte-Signature` in constant time. A difference answers 401 `unauthorized` and stores nothing.
-3. Decode the event, and compare its `seq` with `last_seq` of its partition in the state store (see State). A partition with no stored `last_seq` has no baseline: the first event sets it and starts no catch-up.
+3. Decode the event. A body that is not an event answers 400 `invalid_body`. Compare its `seq` with `last_seq` of its partition in the state store (see State). A partition with no stored `last_seq` has no baseline: the first event sets it and starts no catch-up.
    - `seq` equal to `last_seq` + 1: in order.
    - `seq` at or below `last_seq`: a repeat. Answer 204 and store nothing.
    - `seq` above `last_seq` + 1: a gap. Store the event as in step 4, and mark the partition for a catch-up (see Catch-up).
@@ -160,7 +165,7 @@ An answer of 410 `vcs_events_pruned` means that the stored cursor fell below the
 2. Register a new subscription, and store its `id` and `cursor` as the `events_cursor`. Clear `last_seq` of every partition.
 3. Reconcile every mirror.
 
-Step 2 comes before step 3, so an event that commits after the new subscription is not lost. A subscription whose own cursor fell below the floor stops delivering, and the log of motte names the error. ward has no timer, so it finds this at the next start, because its subscription is missing or its catch-up fails, or because an operator sees `ward_mirror_lag_seconds` grow and calls `POST /v1/hooks/motte/reset`, which answers 202 and does a Reset. That route needs an `operator` token.
+If a step of start, catch-up or Reset fails because motte or the network failed, ward retries it with the backoff of Failure and backoff, and the process keeps serving. Step 2 comes before step 3, so an event that commits after the new subscription is not lost. A subscription whose own cursor fell below the floor stops delivering, and the log of motte names the error. ward has no timer, so it finds this at the next start, because its subscription is missing or its catch-up fails, or because an operator sees `ward_mirror_lag_seconds` grow and calls `POST /v1/hooks/motte/reset`, which answers 202 and does a Reset. That route needs an `operator` token.
 
 ### Reconcile
 
@@ -171,11 +176,11 @@ Reconcile makes a trigger of every ref of a mirror that may differ. It reads the
 
 For each remote ref that a pattern matches, Reconcile also sets `pushed` in the state to the remote tip, or to empty when the ref is absent, so the next push compares with what the remote holds (see Action on a ref).
 
-Reconcile runs only in these cases:
+A failed Reconcile leaves the mirror unreconciled and retries with the same backoff. The worker acts on dirty refs in the meantime. Reconcile runs only in these cases:
 
 - At the first start of a mirror, that is when the state store has no record of its name.
 - After a Reset.
-- On the request of an operator: `POST /v1/mirrors/{name}/reconcile`.
+- On the request of an operator: `POST /v1/mirrors/{name}/reconcile`. A request that comes before the worker of the mirror starts stays pending and the worker runs it when it starts.
 - For one ref, when a push to the remote is refused as stale because the remote moved outside ward (see Action on a ref).
 
 ward never compares the remote with the state on a timer. A change that someone makes on the remote outside ward stays until the next push of that ref, which the lease catches, or until an operator reconciles.
@@ -188,9 +193,9 @@ The state store holds these records:
 |---|---|
 | Service | `subscription_id`, `events_cursor`, and `last_seq` for each partition (0 to 63). |
 | Mirror | `name`, set when the first Reconcile of the mirror ends. |
-| Ref of a mirror | `mirror`, `ref` (stored name), `last_partition`, `last_seq`, `dirty` (boolean), `pushed` (commit or empty), `attempts`, `next_attempt`, `failure` (class, or empty), `failure_since`, `pushed_at`. |
+| Ref of a mirror | `mirror`, `ref` (stored name), `last_partition`, `last_seq`, `dirty` (boolean), `version`, `dirty_since`, `pushed` (commit, empty, or unset), `attempts`, `next_attempt`, `failure` (class, or empty), `message`, `failure_since`, `pushed_at`. |
 
-A trigger sets `dirty` on the ref record, and it updates `last_partition` and `last_seq` of the ref record when its event is newer, by `seq` in one partition. A worker clears `dirty` only in the transaction that records a push result, and only when no trigger arrived after it read the ref. A trigger that arrives during a push therefore leaves the ref dirty, and the worker acts again. The state is small and holds no secret. The clone cache is not state: ward can lose all of it.
+A trigger sets `dirty` on the ref record, increments `version`, sets `dirty_since` when the ref was clean, sets `next_attempt` to now, and updates `last_partition` and `last_seq` of the ref record when its event is newer, by `seq` in one partition. `pushed` is unset until a push or a Reconcile gives it a value, and an empty value means that the ref is absent on the remote. A worker clears `dirty` only in the transaction that records a push result, and only when `version` is the value that the worker read before it read the ref, so no trigger arrived since. A trigger that arrives during a push therefore leaves the ref dirty, and the worker acts again. The state is small and holds no secret. The clone cache is not state: ward can lose all of it.
 
 ### Action on a ref
 
@@ -198,7 +203,7 @@ A worker acts on one dirty ref as follows:
 
 1. Read the ref from motte with `GET /v1/vcs/refs/{name...}` and a `read` grant (see Git access). A 404 `vcs_not_found` means the ref is deleted, and the target is deletion.
 2. If the target is a commit, make sure that the clone holds it. See Clone.
-3. Push to the remote with a lease on the value that ward last pushed (`--force-with-lease=<git ref name>:<pushed>`, and an empty `pushed` means that the ref must be absent). For a commit, push `+<commit>:<git ref name>`. The `+` forces the update: the mirror copies the ref exactly, and a non-fast-forward move is a normal case, because agents rewrite history. For a deletion, push `:<git ref name>`. A remote that says the ref does not exist is a success. A ref that has no `pushed` value yet and no Reconcile result is pushed with no lease.
+3. Push to the remote with a lease on the value that ward last pushed (`--force-with-lease=<git ref name>:<pushed>`, and an empty `pushed` means that the ref must be absent). For a commit, push `<commit>:<git ref name>` when a lease applies, and `+<commit>:<git ref name>` when none applies. A non-fast-forward move is a normal case, because agents rewrite history, and the mirror copies the ref exactly: git accepts a non-fast-forward update when the lease holds, and a leading `+` would make git ignore the lease. For a deletion, push `:<git ref name>`. A remote that says the ref does not exist is a success. A ref whose `pushed` is unset is pushed with no lease. A ref that motte maps to no git name is never acted on.
 4. If the remote refuses the push as stale, the remote ref is not at `pushed`: someone moved it outside ward. ward then reconciles that ref. It reads the remote tip with `git ls-remote`, records it as `pushed`, and acts again at once with no wait. If the second push is refused as stale too, the failure is `remote_rejected` and the backoff applies.
 5. On success, record `pushed` (the commit, or empty for a deletion) and `pushed_at`, clear `failure` and `attempts`, and clear `dirty` as State describes.
 
@@ -210,7 +215,7 @@ Read after write. A worker reads the ref from the metadata store of motte, so a 
 
 ### Git access
 
-ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS` with a helper that is the `ward` binary and reads the credential file.
+ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process of motte only, never of the remote, (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS`. The helper is the `ward` binary, which git runs with the prompt as its only argument. The environment variables `WARD_ASKPASS_FILE` and `WARD_ASKPASS_USER` tell it to answer the user name or the content of the credential file, so it reads the file at each push.
 
 The URL of the repository is `<WARD_MOTTE_URL>/git/<prefix>/<path>.git`, for the repository text `<prefix>:<path>`. For the calls to the control plane of motte (`/v1/events`, `/v1/subscriptions`) ward signs an `operator` grant with a life of 60 seconds. For `GET /v1/vcs/refs` it uses a `read` grant.
 
@@ -228,13 +233,14 @@ If a git run fails in a way that is not a network, motte or remote error, such a
 
 ward checks disk use only when a worker ends a push batch. It starts no timer for it.
 
-- A clone that has no dirty ref and no trigger for `WARD_CLONE_IDLE_TTL` is deleted. The next trigger fetches it again.
+- A clone that has no dirty ref and was not used for `WARD_CLONE_IDLE_TTL` is deleted. A worker marks a clone as used by setting the modification time of its directory. The next trigger fetches it again.
 - When the cache uses more than `WARD_CLONE_DISK_BUDGET`, ward deletes idle clones, least recently used first, until it fits. A clone that a worker uses, or that has a dirty ref, is never deleted. If the budget is still exceeded, ward keeps working, reports `ward_mirror_disk_over_budget` and logs it.
+- A clone of a repository that no configured mirror names is deleted.
 - After a batch that deleted a ref, the worker runs `git gc --prune=now` on the clone, which frees the objects of the deleted ref.
 
 ### Failure and backoff
 
-A failed action leaves the ref dirty, increments `attempts` and sets `next_attempt`. The wait is 1 second, doubled after each attempt, up to 5 minutes, with random jitter of up to 20 percent. The cap holds until the action succeeds. A new trigger for the ref sets `next_attempt` to now, so fresh news is not held by an old backoff. One failing ref delays no other ref.
+A failed action leaves the ref dirty, increments `attempts` and sets `next_attempt`, unless a trigger arrived since the worker read the ref: then `next_attempt` stays at the time of that trigger. The wait is 1 second, doubled after each attempt, up to 5 minutes, with random jitter of up to 20 percent. The cap holds until the action succeeds. A new trigger for the ref sets `next_attempt` to now, so fresh news is not held by an old backoff. One failing ref delays no other ref.
 
 A failure has one class, which the status shows:
 
@@ -250,7 +256,7 @@ The class and a short message are in the status. The message never holds a URL, 
 
 ### Status API
 
-`GET /v1/mirrors` lists the mirrors, and `GET /v1/mirrors/{name}` returns one with its refs. Both need an `operator` token. A `read` token reads `GET /v1/mirrors/{name}` only when the `repo` of the token equals the `repo` of the mirror, else 403 `forbidden`. The answer for a mirror:
+`GET /v1/mirrors` answers `{"mirrors":[...]}` with each mirror without its refs, and `GET /v1/mirrors/{name}` returns one with its refs. Both need an `operator` token. A `read` token reads `GET /v1/mirrors/{name}` only when the `repo` of the token equals the `repo` of the mirror, else 403 `forbidden`, also for a name that no mirror has. An `operator` token gets 404 `not_found` for an unknown name. The answer for a mirror:
 
 ```json
 {
@@ -259,25 +265,26 @@ The class and a short message are in the status. The message never holds a URL, 
   "state": "synced | pending | failing",
   "refs": [
     {"ref": "main", "state": "synced", "pushed": "<commit>", "pushed_at": "<RFC 3339>",
-     "failure": "", "attempts": 0, "failure_since": ""}
-  ]
+     "failure": "", "message": "", "attempts": 0, "failure_since": ""}
+  ],
+  "cursor": "<present only when more refs follow>"
 }
 ```
 
-A ref is `synced` when it is not dirty, `pending` when it is dirty with no failure, and `failing` when it has a failure class. The mirror takes the worst state of its refs. A list of refs has at most 1000 entries, with `?cursor=` as the opaque continuation.
+A ref is `synced` when it is not dirty, `pending` when it is dirty with no failure, and `failing` when it has a failure class. The mirror takes the worst state of its refs. A mirror that has not finished its first Reconcile is `pending`. A bad `cursor` answers 400 `invalid_body`. A list of refs has at most 1000 entries, with `?cursor=` as the opaque continuation.
 
 `POST /v1/mirrors/{name}/reconcile` needs an `operator` token and answers 202. It makes the triggers of a Reconcile pass and returns at once.
 
 ### Observability
 
-- Metrics, with names that start with `ward_`: `ward_mirror_pushes_total` (by mirror and result), `ward_mirror_dirty_refs` (by mirror), `ward_mirror_failing_refs` (by mirror and class), `ward_mirror_lag_seconds` (age of the oldest dirty ref, by mirror), `ward_mirror_clone_bytes`, `ward_mirror_disk_over_budget`, `ward_hook_events_total` (by result) and `ward_http_requests_total` by route.
+- Metrics, with names that start with `ward_`: `ward_mirror_pushes_total` (by mirror and result), `ward_mirror_dirty_refs` (by mirror), `ward_mirror_failing_refs` (by mirror and class), `ward_mirror_lag_seconds` (age of the oldest dirty ref, by mirror; the gauges of the state are read from the state store at each scrape), `ward_mirror_clone_bytes`, `ward_mirror_disk_over_budget`, `ward_hook_events_total` (by result) and `ward_http_requests_total` by route.
 - Traces: OTLP, with the endpoint from the environment and no vendor in the code. Span names start with `ward.mirror.` for the work (`ward.mirror.fetch`, `ward.mirror.push`).
 - Logs: JSON. A log line never holds a grant, a token, the hook secret, a remote credential, a remote URL or an event body.
 - Instrumentation is additive. It never changes behavior or errors.
 
 ### Tests
 
-Contract tests start ward against a real motte (the `testserver` package of motte) and a local bare git repository as the remote. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock.
+Contract tests start ward against a real motte (the `testserver` package of motte, which does not run the delivery worker) and a bare git repository that `git http-backend` serves over HTTP as the remote. A test reads the ref events from `GET /v1/events` and delivers them to the receiver with a real signature, as motte would, and it can drop an event to make a gap. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock: a test that checks the backoff replaces the clock and moves it, and the other tests wait for the report of a finished unit of work, never for time.
 
 ## Planned work
 

@@ -130,7 +130,11 @@ func callee(pass *analysis.Pass, fun ast.Expr) *types.Func {
 
 func isFunc(pass *analysis.Pass, fun ast.Expr, pkg, name string) bool {
 	fn := callee(pass, fun)
-	return fn != nil && fn.Name() == name && fn.Pkg() != nil && fn.Pkg().Path() == pkg
+	if fn == nil || fn.Name() != name || fn.Pkg() == nil || fn.Pkg().Path() != pkg {
+		return false
+	}
+	sig, _ := fn.Type().(*types.Signature)
+	return sig != nil && sig.Recv() == nil
 }
 
 func allowedLines(pass *analysis.Pass, files []*ast.File) map[string]bool {
