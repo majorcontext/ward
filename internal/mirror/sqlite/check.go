@@ -75,6 +75,11 @@ func (s *Store) OpenRequest(ctx context.Context, r check.Request) (check.Request
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		var passed int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM check_results WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? AND status = 'pass'`,
+			r.Repo, r.Tree, r.Hash, r.Env).Scan(&passed); err != nil || passed > 0 {
+			return err
+		}
 		created = true
 		return insertRequest(ctx, tx, r)
 	})

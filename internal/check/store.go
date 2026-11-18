@@ -41,7 +41,7 @@ type Result struct {
 
 // Store is the transactional state of requests and results. Each method that writes is one transaction.
 type Store interface {
-	// OpenRequest returns the open request for the key of r, or stores r and returns it with true.
+	// OpenRequest returns the open request for the key of r. With no open request and no pass for the key, it stores r and returns it with true.
 	OpenRequest(ctx context.Context, r Request) (Request, bool, error)
 	Request(ctx context.Context, id string) (Request, bool, error)
 	OpenRequests(ctx context.Context) ([]Request, error)
