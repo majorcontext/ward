@@ -158,6 +158,7 @@ type harness struct {
 	callerPK ed25519.PublicKey
 
 	started    bool
+	ln         *net.TCPListener
 	motteProxy *httptest.Server
 	motteGate  atomic.Pointer[gate]
 	mu         sync.Mutex
@@ -359,16 +360,40 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 
 func (h *harness) credFile() string { return h.writeFile("remote.cred", remotePass+"\n") }
 
+// listen returns a view of the one listener of the harness. ward closes the listener that it serves on, so the view stops
+// accepting at Close and leaves the socket open: the port is never released and bound again, and a restart keeps its address.
 func (h *harness) listen() net.Listener {
-	addr := h.addr
-	if addr == "" {
-		addr = "127.0.0.1:0"
+	if h.ln == nil {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		h.ln = ln.(*net.TCPListener)
+		h.t.Cleanup(func() { _ = ln.Close() })
 	}
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		h.t.Fatal(err)
+	_ = h.ln.SetDeadline(time.Time{})
+	return &keepOpen{TCPListener: h.ln}
+}
+
+type keepOpen struct {
+	*net.TCPListener
+	closed atomic.Bool
+}
+
+func (k *keepOpen) Accept() (net.Conn, error) {
+	c, err := k.TCPListener.Accept()
+	if k.closed.Load() {
+		if err == nil {
+			_ = c.Close()
+		}
+		return nil, net.ErrClosed
 	}
-	return ln
+	return c, err
+}
+
+func (k *keepOpen) Close() error {
+	k.closed.Store(true)
+	return k.TCPListener.SetDeadline(time.Unix(1, 0))
 }
 
 func (p *wardProc) do(method, path, tok string, body []byte, hdr map[string]string) (int, []byte) {
