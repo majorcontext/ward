@@ -20,7 +20,7 @@ import (
 
 func TestLandWaitsForAPassAndThenLandsTheCheckedTree(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.awaitLand(p, h.postLand(p, "main", "feature/x", nil).ID, "checking")
@@ -46,7 +46,7 @@ func TestLandWaitsForAPassAndThenLandsTheCheckedTree(t *testing.T) {
 
 func TestLandEndsOnAFailAndMovesNothing(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -75,7 +75,7 @@ func (h *harness) sameTreeBranches(base string) {
 
 func TestLandReusesAPassForALaterLandOfTheSameTree(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.sameTreeBranches(base)
 	first := h.postLand(p, "main", "feature/a", nil)
@@ -90,7 +90,7 @@ func TestLandReusesAPassForALaterLandOfTheSameTree(t *testing.T) {
 
 func TestLandAsksAgainAfterAFailAndShowsTheCheckAsFlaky(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.sameTreeBranches(base)
 	first := h.postLand(p, "main", "feature/a", nil)
@@ -108,7 +108,7 @@ func TestLandAsksAgainAfterAFailAndShowsTheCheckAsFlaky(t *testing.T) {
 
 func TestLandChecksTheNewCandidateWhenAnotherWriterMovesTheRefDuringTheChecks(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	moved := h.branchFrom(base, "feature/m", "b.txt", "b\n")
@@ -141,7 +141,7 @@ func TestLandChecksTheNewCandidateWhenAnotherWriterMovesTheRefDuringTheChecks(t 
 
 func TestLandSendsOneRequestForOneTreeWhenTwoLandsWait(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.sameTreeBranches(base)
 	a, b := h.postLand(p, "main", "feature/a", nil), h.postLand(p, "other", "feature/b", nil)
@@ -157,7 +157,7 @@ func TestLandSendsOneRequestForOneTreeWhenTwoLandsWait(t *testing.T) {
 
 func TestLandJudgesABranchByTheCheckFileOfTheTip(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/weaken", ".ward/checks.json", `{"checks":[]}`)
 	h.branchFrom(base, "feature/later", "d.txt", "d\n")
@@ -192,7 +192,7 @@ func TestLandFailsWithLandInvalidWhenTheCheckFileOrTheRunnerIsMissing(t *testing
 			if c.runner {
 				run = newRunner(t)
 			}
-			p := h.startWard(wardOpts{runner: run})
+			p := h.startWard(wardOpts{noMirror: true, runner: run})
 			base := h.seedChecked(c.file)
 			h.branchFrom(base, "feature/x", "c.txt", "c\n")
 			failed := h.awaitLand(p, h.postLand(p, "main", "feature/x", nil).ID, "failed")
@@ -205,7 +205,7 @@ func TestLandFailsWithLandInvalidWhenTheCheckFileOrTheRunnerIsMissing(t *testing
 
 func TestLandResumesAfterARestartWithoutAskingAgain(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -213,7 +213,7 @@ func TestLandResumesAfterARestartWithoutAskingAgain(t *testing.T) {
 	h.awaitLand(p, l.ID, "checking")
 	p.stop()
 
-	p = h.startWard(wardOpts{runner: run})
+	p = h.startWard(wardOpts{noMirror: true, runner: run})
 	p.answer(req, "pass", "ok")
 	done := h.awaitLand(p, l.ID, "landed")
 	if h.treeOf(h.mainTip()) != req.Tree || done.Tree != req.Tree || len(run.reqs) != 0 {
@@ -223,7 +223,7 @@ func TestLandResumesAfterARestartWithoutAskingAgain(t *testing.T) {
 
 func TestResultRoutePostsOnlyForTheTokenRepositoryAndKeepsTheFirstResult(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -261,7 +261,7 @@ func TestResultRoutePostsOnlyForTheTokenRepositoryAndKeepsTheFirstResult(t *test
 func TestRunnerRequestIsRetriedWithABackoffAndSentAgainWhenLate(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
 	clk, waitTimer := newTickClock(t)
-	p := h.startWard(wardOpts{runner: run, clock: clk})
+	p := h.startWard(wardOpts{noMirror: true, runner: run, clock: clk})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	run.status.Store(http.StatusServiceUnavailable)
@@ -292,7 +292,7 @@ func TestRunnerRequestIsRetriedWithABackoffAndSentAgainWhenLate(t *testing.T) {
 
 func TestLandCommandWaitsForChecksAndReportsAFailedCheck(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	h.startWard(wardOpts{runner: run})
+	h.startWard(wardOpts{noMirror: true, runner: run})
 	p := &wardProc{h: h, URL: "http://" + h.addr}
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/ok", "c.txt", "c\n")
@@ -333,7 +333,7 @@ func TestLandCommandWaitsForChecksAndReportsAFailedCheck(t *testing.T) {
 func TestLandReadEndsAtOnceForAnOldStateAtAChangeOrWhenTheWaitEnds(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
 	clk, waitTimer := newTickClock(t)
-	p := h.startWard(wardOpts{runner: run, clock: clk})
+	p := h.startWard(wardOpts{noMirror: true, runner: run, clock: clk})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -365,7 +365,7 @@ func TestLandReadEndsAtOnceForAnOldStateAtAChangeOrWhenTheWaitEnds(t *testing.T)
 
 func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -382,7 +382,7 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 		t.Fatal(err)
 	}
 
-	p = h.startWard(wardOpts{runner: run})
+	p = h.startWard(wardOpts{noMirror: true, runner: run})
 	failed := h.awaitLand(p, l.ID, "failed")
 	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" || len(run.reqs) != 0 {
 		t.Fatalf("land = %+v, %d new requests: a fail from before the restart must end the land", failed, len(run.reqs))
@@ -401,7 +401,7 @@ func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) 
 		}
 	}
 	h.logHook.Store(&hook)
-	p := h.startWard(wardOpts{runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -438,6 +438,6 @@ func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) 
 		t.Fatal(err)
 	}
 	p.stop()
-	p = h.startWard(wardOpts{runner: run})
+	p = h.startWard(wardOpts{noMirror: true, runner: run})
 	h.awaitLand(p, l.ID, "landed")
 }

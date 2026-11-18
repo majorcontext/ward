@@ -56,7 +56,7 @@ func (h *harness) landBody(branch string, extra map[string]any) []byte {
 
 func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T) {
 	h := newHarness(t)
-	p := h.startWard(wardOpts{})
+	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	feature := h.branchFrom(base, "feature/x", "c.txt", "from the branch\n")
 	h.branchFrom(base, "main", "b.txt", "from main\n")
@@ -107,7 +107,7 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 
 func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
 	h := newHarness(t)
-	p := h.startWard(wardOpts{})
+	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "", "feature/x", nil)
@@ -131,7 +131,7 @@ func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
 
 func TestLandReportsAConflictWithItsPathsAndLeavesTheRefAlone(t *testing.T) {
 	h := newHarness(t)
-	p := h.startWard(wardOpts{})
+	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	h.branchFrom(base, "feature/bad", "a.txt", "branch edit\n")
 	moved := h.branchFrom(base, "main", "a.txt", "main edit\n")
@@ -152,7 +152,7 @@ func TestLandReportsAConflictWithItsPathsAndLeavesTheRefAlone(t *testing.T) {
 
 func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 	h := newHarness(t)
-	h.startWard(wardOpts{})
+	h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	clean := h.branchFrom(base, "feature/clean", "c.txt", "c\n")
 	bad := h.branchFrom(base, "feature/bad", "a.txt", "branch edit\n")
@@ -198,7 +198,7 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 
 func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
 	h := newHarness(t)
-	p := h.startWard(wardOpts{proxied: true})
+	p := h.startWard(wardOpts{noMirror: true, proxied: true})
 	base := h.seedMain()
 	feature := h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	h.branchFrom(base, "main", "b.txt", "b\n")
@@ -212,7 +212,7 @@ func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
 	}
 	h.holdLand.Store(false)
 
-	p = h.startWard(wardOpts{proxied: true})
+	p = h.startWard(wardOpts{noMirror: true, proxied: true})
 	done := h.awaitLand(p, l.ID, "landed")
 	if done.Tip != h.mainTip() || len(done.Commits) != 1 || done.Commits[0].Old != feature || done.Commits[0].New != done.Tip {
 		t.Fatalf("land = %+v, main = %s", done, h.mainTip())

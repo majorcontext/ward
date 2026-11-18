@@ -95,10 +95,10 @@ func newRemote(t *testing.T) *remote {
 	t.Helper()
 	root := t.TempDir()
 	r := &remote{t: t, dir: filepath.Join(root, "r.git"), user: remoteUser}
-	gitIn(t, root, "init", "--bare", "-q", r.dir)
-	gitIn(t, r.dir, "config", "http.receivepack", "true")
-	exec := gitIn(t, root, "--exec-path")
-	backend := &cgi.Handler{Path: filepath.Join(exec, "git-http-backend"), InheritEnv: []string{"PATH"},
+	if err := os.CopyFS(r.dir, os.DirFS(bareTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	backend := &cgi.Handler{Path: filepath.Join(gitExecPath, "git-http-backend"), InheritEnv: []string{"PATH"},
 		Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}}
 	r.pass.set(remotePass)
 	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -201,8 +201,17 @@ func newHarness(t *testing.T) *harness {
 	h.repoPath, h.repo = path, "native:"+path
 	h.work = t.TempDir()
 	u := strings.Replace(h.motte.URL, "http://", "http://git:"+h.motte.WriteGrant(t, h.repo)+"@", 1) + "/git/native/" + path + ".git"
-	gitIn(t, h.work, "init", "-q")
-	gitIn(t, h.work, "remote", "add", "origin", u)
+	if err := os.CopyFS(h.work, os.DirFS(workTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := os.OpenFile(filepath.Join(h.work, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(cfg, "[remote \"origin\"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n", u)
+	if err != nil || cfg.Close() != nil {
+		t.Fatal("write the remote of the working clone")
+	}
 	return h
 }
 
@@ -248,6 +257,19 @@ func (h *harness) commit(file, content string) string {
 	}
 	h.git("add", file)
 	h.git("commit", "-q", "-m", "edit "+file)
+	return h.head()
+}
+
+// head returns the commit of the current branch of the working clone. It reads the loose ref, because git has no
+// reason to pack the refs of a clone that lives for one test, and a spawn of git costs more than the read.
+func (h *harness) head() string {
+	h.t.Helper()
+	ref, err := os.ReadFile(filepath.Join(h.work, ".git", "HEAD"))
+	if name, ok := strings.CutPrefix(strings.TrimSpace(string(ref)), "ref: "); err == nil && ok {
+		if sha, err := os.ReadFile(filepath.Join(h.work, ".git", name)); err == nil {
+			return strings.TrimSpace(string(sha))
+		}
+	}
 	return h.git("rev-parse", "HEAD")
 }
 
@@ -295,6 +317,8 @@ type wardOpts struct {
 	seedInflated string
 	// runner is the runner of the repository of the harness.
 	runner *fakeRunner
+	// noMirror starts ward with no mirror, and so with no remote work and no wait for a reconcile.
+	noMirror bool
 }
 
 type wardProc struct {
@@ -342,6 +366,9 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		githubAPI = o.app.srv.URL
 	}
 	entries, _ := json.Marshal([]mirror.Entry{entry})
+	if o.noMirror {
+		entries = nil
+	}
 	runners := ""
 	if o.runner != nil {
 		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, URL: o.runner.srv.URL, SecretFile: h.writeFile("runner.secret", runnerSecret+"\n"), Env: runnerEnv}})
@@ -361,7 +388,9 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_SEED_MAX_OBJECTS": o.seedObjects, "WARD_SEED_MAX_INFLATED_BYTES": o.seedInflated,
 	}
 	adjust := func(c *config.Config) {
-		c.Mirror.Mirrors[0].Remote = h.remote.URL
+		if len(c.Mirror.Mirrors) > 0 {
+			c.Mirror.Mirrors[0].Remote = h.remote.URL
+		}
 		c.Mirror.Askpass = askpassBin
 	}
 	ctx, cancel := context.WithCancel(h.t.Context())
@@ -383,7 +412,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		})
 	}
 	h.t.Cleanup(p.stop)
-	if o.noWait {
+	if o.noWait || o.noMirror {
 		return p
 	}
 	h.waitFor("ward to start", func() bool { return h.count("init") > before })

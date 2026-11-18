@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -160,13 +162,22 @@ func (h *harness) awaitLand(p *wardProc, id, want string) landState {
 	}
 }
 
-// seedChecked puts the check file and a.txt on main and returns main.
+// seedChecked puts the check file and a.txt on main in one commit and returns main.
 func (h *harness) seedChecked(file string) string {
 	h.t.Helper()
 	h.git("fetch", "-q", "origin", "main")
 	h.git("reset", "-q", "--hard", "FETCH_HEAD")
-	h.commit("a.txt", "base\n")
-	base := h.commit(".ward/checks.json", file)
+	for name, content := range map[string]string{"a.txt": "base\n", ".ward/checks.json": file} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(h.work, name)), 0o755); err != nil {
+			h.t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(h.work, name), []byte(content), 0o644); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	h.git("add", "a.txt", ".ward/checks.json")
+	h.git("commit", "-q", "-m", "seed")
+	base := h.head()
 	h.push("main", base, false)
 	h.protectMain()
 	return base
