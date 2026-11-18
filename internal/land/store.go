@@ -45,7 +45,15 @@ type Error struct {
 	Details map[string]any `json:"details,omitempty"`
 }
 
-// Land is the record of one land. Mark is the result position after which a fail counts for this land.
+// Call is the final land call to motte, stored before it is sent so that a repeat after a restart carries the same values.
+type Call struct {
+	Base      string `json:"base"`
+	Head      string `json:"head"`
+	Tree      string `json:"tree"`
+	BranchGen int64  `json:"branch_generation"`
+}
+
+// Land is the record of one land. Attempt counts the times that the land reached step 5, and Call is the call of the latest. Mark is the result position after which a fail counts for this land.
 type Land struct {
 	ID            string             `json:"id"`
 	Repo          string             `json:"repo"`
@@ -63,6 +71,8 @@ type Land struct {
 	Error         *Error             `json:"error,omitempty"`
 	Retries       int                `json:"retries"`
 	Mark          int64              `json:"mark"`
+	Attempt       int                `json:"attempt"`
+	Call          *Call              `json:"call,omitempty"`
 }
 
 // Key names the queue of a land.

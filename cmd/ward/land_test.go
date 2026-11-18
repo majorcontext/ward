@@ -195,3 +195,31 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 		t.Fatalf("no credential: exit %d, %s", code, errOut)
 	}
 }
+
+func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
+	h := newHarness(t)
+	p := h.startWard(wardOpts{proxied: true})
+	base := h.seedMain()
+	feature := h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.branchFrom(base, "main", "b.txt", "b\n")
+	h.protectMain()
+	h.holdLand.Store(true)
+	l := h.postLand(p, "main", "feature/x", nil)
+	<-h.landRecord
+	p.stop()
+	if h.mainTip() == base {
+		t.Fatal("motte did not record the land before the restart")
+	}
+	h.holdLand.Store(false)
+
+	p = h.startWard(wardOpts{proxied: true})
+	done := h.awaitLand(p, l.ID, "landed")
+	if done.Tip != h.mainTip() || len(done.Commits) != 1 || done.Commits[0].Old != feature || done.Commits[0].New != done.Tip {
+		t.Fatalf("land = %+v, main = %s", done, h.mainTip())
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.landBodies) != 2 || h.landBodies[0] != h.landBodies[1] || !strings.Contains(h.landBodies[0], `"id":"`+l.ID+`-1"`) {
+		t.Fatalf("land calls = %q: the repeat must carry the same id and values", h.landBodies)
+	}
+}

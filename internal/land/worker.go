@@ -45,6 +45,7 @@ func (s *Service) run(l Land) error {
 				out = outcome{kind: failed, err: &Error{Code: out.retryCode, Message: "the ref kept moving or motte kept timing out"}}
 			} else {
 				l.Retries++
+				l.Call = nil
 				continue
 			}
 		}
@@ -59,6 +60,9 @@ func (s *Service) run(l Land) error {
 func (s *Service) attempt(l *Land) outcome {
 	ctx := s.ctx
 	reader, merger := s.client("read", l.Repo), s.client("merge", l.Repo)
+	if l.State == Landing && l.Call != nil {
+		return s.send(ctx, merger, l)
+	}
 	branch, err := reader.Ref(ctx, l.Branch)
 	if err != nil {
 		return s.refusal(err)
@@ -78,9 +82,7 @@ func (s *Service) attempt(l *Land) outcome {
 	if out := s.check(ctx, reader, l, tip.Commit, candidate, tree); out.kind != proceed {
 		return out
 	}
-	out := s.land(ctx, merger, l, base, branch.Commit)
-	out.branchGen = branch.Generation
-	return out
+	return s.land(ctx, merger, l, base, branch.Commit, branch.Generation)
 }
 
 // refusal maps an error of motte to the end of the attempt.
@@ -200,16 +202,25 @@ func (s *Service) await(ctx context.Context, l *Land, checks []check.Check, cand
 	}
 }
 
-// land is step 5. Motte moves the ref only when the tree of the land is the tree that the checks judged.
-func (s *Service) land(ctx context.Context, merger *client.Client, l *Land, base, head string) outcome {
+// land is step 5. It stores the call before it sends it, so that a restart repeats the same call.
+func (s *Service) land(ctx context.Context, merger *client.Client, l *Land, base, head string, branchGen int64) outcome {
+	l.Attempt++
+	l.Call = &Call{Base: base, Head: head, Tree: l.Tree, BranchGen: branchGen}
 	if err := s.save(l, Landing); err != nil {
 		return s.refusal(err)
 	}
-	res, err := merger.Land(ctx, l.Repo, api.LandRequest{Ref: l.Ref, Base: base, Head: head, ExpectTree: l.Tree})
+	return s.send(ctx, merger, l)
+}
+
+// send is the land call of motte. Motte moves the ref only when the tree of the land is the tree that the checks judged,
+// and it answers a repeat of the same id with the first result.
+func (s *Service) send(ctx context.Context, merger *client.Client, l *Land) outcome {
+	c := l.Call
+	res, err := merger.Land(ctx, l.Repo, api.LandRequest{ID: fmt.Sprintf("%s-%d", l.ID, l.Attempt), Ref: l.Ref, Base: c.Base, Head: c.Head, ExpectTree: c.Tree})
 	if err != nil {
 		return s.refusal(err)
 	}
-	return outcome{kind: landed, landed: res}
+	return outcome{kind: landed, landed: res, branchGen: c.BranchGen}
 }
 
 // save stores the land in state st. It wakes the readers of the land when the state changed.

@@ -176,6 +176,10 @@ type harness struct {
 	motteProxy *httptest.Server
 	motteGate  atomic.Pointer[gate]
 	// limitPushes makes the proxy answer 503 to a push of git once pushesLeft pushes passed.
+	// holdLand makes the proxy answer no land of main: it forwards the land, and keeps the reply until the caller leaves.
+	holdLand    atomic.Bool
+	landRecord  chan struct{}
+	landBodies  []string
 	limitPushes atomic.Bool
 	pushesLeft  atomic.Int64
 	mu          sync.Mutex
@@ -186,7 +190,7 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	t.Parallel()
 	h := &harness{t: t, motte: testserver.StartLocal(t), remote: newRemote(t), dataDir: t.TempDir(), files: t.TempDir(),
-		secret: strings.Repeat("h", 32), notes: make(chan string, 4096), counts: map[string]int{}}
+		secret: strings.Repeat("h", 32), notes: make(chan string, 4096), counts: map[string]int{}, landRecord: make(chan struct{}, 4)}
 	h.callerPK, h.callerSK, _ = ed25519.GenerateKey(rand.Reader)
 	path, err := h.motte.Client(h.motte.OperatorGrant(t)).CreateRepo(t.Context(), "widgets", "o1")
 	if err != nil {
@@ -626,6 +630,21 @@ func (h *harness) proxy() *httptest.Server {
 		if g := h.motteGate.Load(); g != nil && r.URL.Path == "/v1/subscriptions" {
 			g.entered <- struct{}{}
 			<-g.release
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/lands") {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if bytes.Contains(body, []byte(`"ref":"main"`)) {
+				h.mu.Lock()
+				h.landBodies = append(h.landBodies, string(body))
+				h.mu.Unlock()
+				if h.holdLand.Load() {
+					rp.ServeHTTP(httptest.NewRecorder(), r)
+					h.landRecord <- struct{}{}
+					<-r.Context().Done()
+					return
+				}
+			}
 		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") && h.limitPushes.Load() && h.pushesLeft.Add(-1) < 0 {
 			w.WriteHeader(http.StatusServiceUnavailable)
