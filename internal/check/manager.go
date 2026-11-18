@@ -274,22 +274,23 @@ func (m *Manager) awaitResult(ctx context.Context, req Request) (Request, bool) 
 		select {
 		case <-changed:
 		case <-late:
-			next, err := m.resend(ctx, req)
-			return next, err == nil
+			next, ok, err := m.resend(ctx, req)
+			return next, err == nil && ok
 		case <-ctx.Done():
 			return Request{}, false
 		}
 	}
 }
 
-func (m *Manager) resend(ctx context.Context, old Request) (Request, error) {
+func (m *Manager) resend(ctx context.Context, old Request) (Request, bool, error) {
 	id, err := newID()
 	if err != nil {
-		return Request{}, err
+		return Request{}, false, err
 	}
 	next := old
 	next.ID, next.AcceptedAt, next.Open = id, time.Time{}, true
-	return next, m.store.Supersede(ctx, old.ID, next)
+	ok, err := m.store.Supersede(ctx, old.ID, next)
+	return next, ok, err
 }
 
 func (m *Manager) post(ctx context.Context, req Request) error {

@@ -46,8 +46,9 @@ type Store interface {
 	Request(ctx context.Context, id string) (Request, bool, error)
 	OpenRequests(ctx context.Context) ([]Request, error)
 	SetAccepted(ctx context.Context, id string, at time.Time) error
-	// Supersede closes the request old and stores next, an open request for the same key.
-	Supersede(ctx context.Context, old string, next Request) error
+	// Supersede closes the request old and stores next, an open request for the same key. It does nothing and returns false
+	// when old is no longer open or the key has a pass.
+	Supersede(ctx context.Context, old string, next Request) (bool, error)
 	// AddResult stores a result and closes its request. A pass also closes every other open request for the key.
 	// It returns false and changes nothing when the request already has a result.
 	AddResult(ctx context.Context, r Result) (bool, error)

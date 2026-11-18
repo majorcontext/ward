@@ -115,13 +115,24 @@ func (s *Store) SetAccepted(ctx context.Context, id string, at time.Time) error 
 	return s.exec(ctx, `UPDATE check_requests SET accepted_at = ? WHERE id = ?`, micro(at), id)
 }
 
-func (s *Store) Supersede(ctx context.Context, old string, next check.Request) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+func (s *Store) Supersede(ctx context.Context, old string, next check.Request) (bool, error) {
+	done := false
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var open, passed int
+		if err := tx.QueryRowContext(ctx, `SELECT open, (SELECT COUNT(*) FROM check_results WHERE repo = r.repo AND tree = r.tree AND check_hash = r.check_hash AND env = r.env AND status = 'pass')
+			FROM check_requests r WHERE id = ?`, old).Scan(&open, &passed); err != nil {
+			return err
+		}
+		if open == 0 || passed > 0 {
+			return nil
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET open = 0 WHERE id = ?`, old); err != nil {
 			return err
 		}
+		done = true
 		return insertRequest(ctx, tx, next)
 	})
+	return done, err
 }
 
 func (s *Store) AddResult(ctx context.Context, r check.Result) (bool, error) {
