@@ -4,32 +4,35 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
-
-	"github.com/majorcontext/ward/internal/mirror"
 )
 
-// askpassBin is the ward binary that git runs for the remote credential. A test binary starts too slowly for that.
+// askpassBin answers git like the ward binary does, but starts at once: compiling ward for a test costs more than the tests.
 var askpassBin string
 
+const askpassScript = `#!/bin/sh
+case "$1" in
+Username*) echo "$WARD_ASKPASS_USER" ;;
+*) cat "$WARD_ASKPASS_FILE" ;;
+esac
+`
+
 func TestMain(m *testing.M) {
-	if mirror.MaybeAskpass(os.Args[1:], os.Stdout) {
-		return
-	}
-	dir, err := os.MkdirTemp("", "ward-bin")
+	dir, err := os.MkdirTemp("", "ward-askpass")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	askpassBin = filepath.Join(dir, "ward")
-	if out, err := exec.Command("go", "build", "-o", askpassBin, ".").CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build ward: %v\n%s", err, out)
+	askpassBin = filepath.Join(dir, "askpass")
+	if err := os.WriteFile(askpassBin, []byte(askpassScript), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	// Each test spawns many git processes. A crowd of them makes every test slow, so few run at once.
-	_ = flag.Set("test.parallel", "4")
+	_ = flag.Set("test.parallel", strconv.Itoa(min(runtime.NumCPU(), 8)))
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
