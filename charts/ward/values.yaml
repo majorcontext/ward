@@ -44,7 +44,7 @@ trustedKeysSecret:
   name: ""
   key: trusted-keys.json
 
-# mirrors lists the mirrors. Each has name, repo, remote, refs, pruneUnknown, username, and exactly one credential:
+# mirrors lists the mirrors. Each has name, repo, remote, refs, pruneUnknown, seed, username, and exactly one credential:
 #   credential: {secret: NAME, key: KEY}                       a file with the password or token of the remote
 #   githubApp: {appId: N, installationId: N, secret: NAME, key: KEY}   a PEM RSA private key of a GitHub App
 mirrors: []

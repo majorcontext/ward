@@ -24,4 +24,5 @@ mirrors:
     remote: https://git.example/gadgets.git
     refs: ["*"]
     pruneUnknown: true
+    seed: true
     githubApp: {appId: 123, installationId: 456, secret: gadgets-app, key: private-key.pem}
