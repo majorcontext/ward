@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 )
 
@@ -51,7 +52,7 @@ func ParseFile(data []byte) ([]Check, error) {
 	if err := dec.Decode(&in); err != nil {
 		return nil, fmt.Errorf("%s does not parse: %w", FilePath, err)
 	}
-	if _, err := dec.Token(); err == nil {
+	if _, err := dec.Token(); err != io.EOF {
 		return nil, fmt.Errorf("%s does not parse: data follows the object", FilePath)
 	}
 	seen := map[string]bool{}
