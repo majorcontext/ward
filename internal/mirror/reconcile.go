@@ -31,7 +31,7 @@ func (e *Engine) reconcile(ctx context.Context, en Entry) error {
 		return err
 	}
 	for _, name := range known {
-		if !inMotte[name] {
+		if !inMotte[name] && en.Matches(name) {
 			targets[name] = onRemote[name]
 		}
 	}

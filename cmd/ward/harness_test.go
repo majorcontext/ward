@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,6 +63,20 @@ type remote struct {
 	srv  *httptest.Server
 	URL  string
 	pass atomicString
+	gate atomic.Pointer[gate]
+}
+
+// gate holds the ls-remote requests of the remote until release is closed.
+type gate struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+// hold makes the next ref listing of the remote wait. It returns the channel that reports the wait and the release.
+func (r *remote) hold() (<-chan struct{}, func()) {
+	g := &gate{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	r.gate.Store(g)
+	return g.entered, func() { r.gate.Store(nil); close(g.release) }
 }
 
 type atomicString struct {
@@ -88,6 +103,10 @@ func newRemote(t *testing.T) *remote {
 			w.Header().Set("WWW-Authenticate", `Basic realm="r"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+		if g := r.gate.Load(); g != nil && strings.HasSuffix(req.URL.Path, "/info/refs") {
+			g.entered <- struct{}{}
+			<-g.release
 		}
 		backend.ServeHTTP(w, req)
 	}))
@@ -153,8 +172,8 @@ func newHarness(t *testing.T) *harness {
 	h.repoPath, h.repo = path, "native:"+path
 	h.work = t.TempDir()
 	u := strings.Replace(h.motte.URL, "http://", "http://git:"+h.motte.WriteGrant(t, h.repo)+"@", 1) + "/git/native/" + path + ".git"
-	gitIn(t, h.work, "clone", "-q", u, "w")
-	h.work = filepath.Join(h.work, "w")
+	gitIn(t, h.work, "init", "-q")
+	gitIn(t, h.work, "remote", "add", "origin", u)
 	return h
 }
 
@@ -453,6 +472,10 @@ func (c *fakeClock) Now() time.Time {
 
 func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
+	if d <= 0 {
+		ch <- c.Now()
+		return ch
+	}
 	c.mu.Lock()
 	c.timers = append(c.timers, fakeTimer{at: c.now.Add(d), ch: ch})
 	c.mu.Unlock()

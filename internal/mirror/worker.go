@@ -20,6 +20,7 @@ type worker struct {
 	next      time.Time
 
 	reconcileFails int
+	gen            int
 }
 
 func newWorker(e *Engine, en Entry) *worker {
@@ -36,39 +37,51 @@ func (w *worker) wake() {
 func (w *worker) requestReconcile() {
 	w.mu.Lock()
 	w.reconcile = true
+	w.gen++
 	w.retryAt = time.Time{}
 	w.mu.Unlock()
 	w.wake()
 }
 
 // reconcileDue reports whether a Reconcile is wanted and its retry wait is over.
-func (w *worker) reconcileDue(now time.Time) bool {
+func (w *worker) reconcileDue(now time.Time) (bool, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.reconcile && !now.Before(w.retryAt)
+	return w.reconcile && !now.Before(w.retryAt), w.gen
 }
 
-func (w *worker) reconcileDone(err error, now time.Time) {
+// reconcileDone ends a pass that started at generation gen. A request that came during the pass keeps the flag.
+func (w *worker) reconcileDone(err error, now time.Time, gen int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err == nil {
-		w.reconcile, w.retryAt, w.reconcileFails = false, time.Time{}, 0
+		w.reconcileFails = 0
+		if w.gen == gen {
+			w.reconcile, w.retryAt = false, time.Time{}
+		}
 		return
 	}
 	w.reconcileFails++
 	w.retryAt = now.Add(backoff(w.reconcileFails))
 }
 
+func (w *worker) maybeReconcile(ctx context.Context) {
+	now := w.e.clock.Now()
+	due, gen := w.reconcileDue(now)
+	if !due {
+		return
+	}
+	err := w.e.reconcile(ctx, w.en)
+	if err != nil && ctx.Err() == nil {
+		w.e.log.Warn("reconcile failed", "mirror", w.en.Name, "error", sanitize(err))
+	}
+	w.reconcileDone(err, now, gen)
+}
+
 func (w *worker) run(ctx context.Context) {
 	failures := 0
 	for ctx.Err() == nil {
-		if now := w.e.clock.Now(); w.reconcileDue(now) {
-			err := w.e.reconcile(ctx, w.en)
-			if err != nil && ctx.Err() == nil {
-				w.e.log.Warn("reconcile failed", "mirror", w.en.Name, "error", sanitize(err))
-			}
-			w.reconcileDone(err, now)
-		}
+		w.maybeReconcile(ctx)
 		done, err := w.step(ctx)
 		switch {
 		case err != nil:
@@ -98,6 +111,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	due = w.e.dropExcluded(ctx, w.en, due)
 	if len(due) > 0 {
 		w.e.batch(ctx, w.en, due)
 		return true, nil

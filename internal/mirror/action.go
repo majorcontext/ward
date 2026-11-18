@@ -262,3 +262,18 @@ func (e *Engine) cleanup(ctx context.Context, en Entry, clone string, targets []
 		e.log.Warn("git gc failed", "mirror", en.Name, "error", sanitize(err))
 	}
 }
+
+// dropExcluded clears the work of refs that no current pattern matches and returns the rest. An excluded ref is never touched on the remote.
+func (e *Engine) dropExcluded(ctx context.Context, en Entry, due []Ref) []Ref {
+	var keep []Ref
+	for _, r := range due {
+		if en.Matches(r.Name) {
+			keep = append(keep, r)
+			continue
+		}
+		if err := e.store.RecordPush(ctx, en.Name, r.Name, r.Version, r.Pushed, e.clock.Now()); err != nil {
+			e.log.Error("clear excluded ref", "mirror", en.Name, "error", sanitize(err))
+		}
+	}
+	return keep
+}

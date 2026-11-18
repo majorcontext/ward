@@ -30,7 +30,21 @@ func (h *harness) waitRef(p *wardProc, ref string, ok func(refView) bool) {
 	})
 }
 
-func TestMirrorCreatesUpdatesForcesAndDeletes(t *testing.T) {
+// sameRefPartition returns two ref names of the repository that share an event partition.
+func sameRefPartition(repo string) (string, string) {
+	seen := map[int]string{}
+	for i := range 200 {
+		name := fmt.Sprintf("feature/n%d", i)
+		p := meta.Partition(repo, name)
+		if other, ok := seen[p]; ok {
+			return other, name
+		}
+		seen[p] = name
+	}
+	panic("no two refs share a partition")
+}
+
+func TestMirrorFollowsRefsThroughTheirLife(t *testing.T) {
 	h := newHarness(t)
 	p := h.startWard(wardOpts{refs: []string{"main", "feature/*"}})
 	h.skip()
@@ -61,47 +75,33 @@ func TestMirrorCreatesUpdatesForcesAndDeletes(t *testing.T) {
 	h.relay(p)
 	h.waitTip("feature/a", "")
 	h.waitRef(p, "feature/a", func(r refView) bool { return r.State == "synced" && r.Pushed == "" })
+
+	h.push("feature/b", c3, false)
+	h.relay(p)
+	h.waitTip("feature/b", c3)
+	gitIn(t, h.remote.dir, "update-ref", "-d", "refs/heads/feature/b")
+	n := h.count("reconcile")
+	if code, _ := p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", h.token(token.ScopeOperator, ""), nil, nil); code != http.StatusAccepted {
+		t.Fatalf("reconcile answered %d", code)
+	}
+	h.waitFor("reconcile", func() bool { return h.count("reconcile") > n })
+	h.waitTip("feature/b", c3)
+
+	clone, _ := filepath.Glob(filepath.Join(h.dataDir, "clones", "*.git"))
+	if len(clone) != 1 {
+		t.Fatalf("clones = %v", clone)
+	}
+	gitIn(t, clone[0], "cat-file", "-e", c3)
+	b := h.count("batch")
+	h.deleteRef("feature/b")
+	h.relay(p)
+	h.waitFor("the delete batch", func() bool { return h.count("batch") > b && h.remote.tip("refs/heads/feature/b") == "" })
+	if err := gitErr(clone[0], "cat-file", "-e", c3); err == nil {
+		t.Fatal("the commit of the deleted ref is still in the clone")
+	}
 }
 
-func TestMirrorEndsAtTheLatestCommitOfRapidUpdates(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
-	h.skip()
-	var last string
-	for i := range 5 {
-		last = h.commit("f.txt", fmt.Sprint(i))
-		h.push("feature/x", last, true)
-	}
-	evs := h.events()
-	if len(evs) != 5 {
-		t.Fatalf("motte holds %d events for the ref, want 5", len(evs))
-	}
-	for i := len(evs) - 1; i >= 0; i-- {
-		p.deliver(evs[i])
-	}
-	h.waitTip("feature/x", last)
-}
-
-func TestMirrorTreatsARepeatedDeliveryAsHarmless(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
-	h.skip()
-	c1 := h.commit("a.txt", "1")
-	h.push("feature/a", c1, false)
-	evs := h.relay(p)
-	h.waitTip("feature/a", c1)
-	for _, ev := range evs {
-		if code := p.deliver(ev); code != http.StatusNoContent {
-			t.Fatalf("a repeat answered %d, want 204", code)
-		}
-	}
-	if got := p.metric(`ward_hook_events_total{result="repeat"}`); got != float64(len(evs)) {
-		t.Fatalf("repeat events = %v, want %d", got, len(evs))
-	}
-	h.waitRef(p, "feature/a", func(r refView) bool { return r.State == "synced" && r.Pushed == c1 })
-}
-
-func TestMirrorRefusesAForgedDeliveryAndStoresNothing(t *testing.T) {
+func TestMirrorReceiverRefusesForgeriesIgnoresRepeatsAndUnmatchedRefsAndKeepsOrder(t *testing.T) {
 	h := newHarness(t)
 	p := h.startWard(wardOpts{refs: []string{"feature/*"}})
 	h.skip()
@@ -136,20 +136,132 @@ func TestMirrorRefusesAForgedDeliveryAndStoresNothing(t *testing.T) {
 		t.Fatalf("the signed event answered %d", code)
 	}
 	h.waitTip("feature/a", c1)
+	if code := p.deliver(ev); code != http.StatusNoContent {
+		t.Fatalf("a repeat answered %d, want 204", code)
+	}
+	if got := p.metric(`ward_hook_events_total{result="repeat"}`); got != 1 {
+		t.Fatalf("repeat events = %v, want 1", got)
+	}
+
+	h.push("other/x", c1, false)
+	h.push("feature/y", c1, false)
+	h.relay(p)
+	h.waitTip("feature/y", c1)
+	if got := h.remote.tip("refs/heads/other/x"); got != "" {
+		t.Fatalf("unmatched ref reached the remote at %s", got)
+	}
+	if _, found := p.status().ref("other/x"); found {
+		t.Fatal("an unmatched ref has state")
+	}
+
+	var last string
+	for i := range 5 {
+		last = h.commit("f.txt", fmt.Sprint(i))
+		h.push("feature/x", last, true)
+	}
+	evs := h.events()
+	if len(evs) != 5 {
+		t.Fatalf("motte holds %d events for the ref, want 5", len(evs))
+	}
+	for i := len(evs) - 1; i >= 0; i-- {
+		p.deliver(evs[i])
+	}
+	h.waitTip("feature/x", last)
 }
 
-// sameRefPartition returns two ref names of the repository that share an event partition.
-func sameRefPartition(repo string) (string, string) {
-	seen := map[int]string{}
-	for i := range 200 {
-		name := fmt.Sprintf("feature/n%d", i)
-		p := meta.Partition(repo, name)
-		if other, ok := seen[p]; ok {
-			return other, name
-		}
-		seen[p] = name
+func TestMirrorReportsRemoteFailuresAndRecovers(t *testing.T) {
+	h := newHarness(t)
+	h.remote.rejectRef("refs/heads/feature/bad")
+	p := h.startWard(wardOpts{})
+	h.skip()
+	c1 := h.commit("a.txt", "1")
+	h.push("feature/bad", c1, false)
+	h.push("feature/good", c1, false)
+	h.relay(p)
+	h.waitTip("feature/good", c1)
+	h.waitRef(p, "feature/bad", func(r refView) bool { return r.State == "failing" && r.Failure == "remote_rejected" && r.Attempts >= 1 })
+	if got := h.remote.tip("refs/heads/feature/bad"); got != "" {
+		t.Fatalf("the rejected ref is at %q", got)
 	}
-	panic("no two refs share a partition")
+	if r, _ := p.status().ref("feature/bad"); strings.Contains(r.Message, "refused\n") || r.Message == "" {
+		t.Fatalf("message = %q", r.Message)
+	}
+	if v := p.status(); v.State != "failing" {
+		t.Fatalf("mirror state = %s, want failing", v.State)
+	}
+	h.remote.allowAll()
+	c2 := h.commit("a.txt", "2")
+	h.push("feature/bad", c2, false)
+	h.relay(p)
+	h.waitTip("feature/bad", c2)
+	h.waitRef(p, "feature/bad", func(r refView) bool { return r.State == "synced" && r.Failure == "" && r.Attempts == 0 })
+
+	h.remote.pass.set("rotated")
+	c3 := h.commit("a.txt", "3")
+	h.push("feature/a", c3, false)
+	h.relay(p)
+	h.waitRef(p, "feature/a", func(r refView) bool { return r.Failure == "remote_auth" })
+	h.writeFile("remote.cred", "rotated\n")
+	c4 := h.commit("a.txt", "4")
+	h.push("feature/a", c4, false)
+	h.relay(p)
+	h.waitTip("feature/a", c4)
+
+	h.remote.srv.Close()
+	h.push("feature/c", h.commit("a.txt", "5"), false)
+	h.relay(p)
+	h.waitRef(p, "feature/c", func(r refView) bool { return r.Failure == "remote_unreachable" })
+}
+
+func TestMirrorNeverTouchesRefsThatNoPatternMatchesAnyMore(t *testing.T) {
+	h := newHarness(t)
+	clk := newFakeClock(func() { h.note("timer", "") })
+	h.remote.rejectRef("refs/heads/feature/a")
+	p := h.startWard(wardOpts{clock: clk})
+	h.skip()
+	c1 := h.commit("a.txt", "1")
+	h.push("feature/a", c1, false)
+	h.relay(p)
+	h.waitRef(p, "feature/a", func(r refView) bool { return r.Failure == "remote_rejected" })
+	p.stop()
+
+	h.remote.allowAll()
+	p = h.startWard(wardOpts{refs: []string{"feature/keep"}, clock: clk})
+	clk.advance(time.Minute)
+	h.waitRef(p, "feature/a", func(r refView) bool { return r.State == "synced" })
+	if got := h.remote.tip("refs/heads/feature/a"); got != "" {
+		t.Fatalf("an excluded ref was pushed to %s", got)
+	}
+
+	orphan := h.remote.orphan()
+	h.remote.setRef("refs/heads/feature/a", orphan)
+	h.deleteRef("feature/a")
+	n := h.count("reconcile")
+	p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", h.token(token.ScopeOperator, ""), nil, nil)
+	h.waitFor("reconcile", func() bool { return h.count("reconcile") > n })
+	h.push("feature/keep", c1, false)
+	h.relay(p)
+	h.waitTip("feature/keep", c1)
+	if got := h.remote.tip("refs/heads/feature/a"); got != orphan {
+		t.Fatalf("an excluded ref changed to %q", got)
+	}
+}
+
+func TestMirrorRunsAnotherReconcileWhenOneIsRequestedDuringAPass(t *testing.T) {
+	h := newHarness(t)
+	p := h.startWard(wardOpts{})
+	op := h.token(token.ScopeOperator, "")
+	n := h.count("reconcile")
+	entered, release := h.remote.hold()
+	p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", op, nil, nil)
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second): //lint:allow wallclock a wait on another process that no bubble holds
+		t.Fatal("the first pass never listed the remote")
+	}
+	p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", op, nil, nil)
+	release()
+	h.waitFor("two passes", func() bool { return h.count("reconcile") >= n+2 })
 }
 
 func TestMirrorCatchesUpAfterASequenceGap(t *testing.T) {
@@ -248,35 +360,6 @@ func TestMirrorHandlesARemoteMovedOutsideWard(t *testing.T) {
 	h.waitTip("feature/b", c2)
 }
 
-func TestMirrorReportsARemoteThatRejectsARefAndRecovers(t *testing.T) {
-	h := newHarness(t)
-	h.remote.rejectRef("refs/heads/feature/bad")
-	p := h.startWard(wardOpts{})
-	h.skip()
-	c1 := h.commit("a.txt", "1")
-	h.push("feature/bad", c1, false)
-	h.push("feature/good", c1, false)
-	h.relay(p)
-	h.waitTip("feature/good", c1)
-	h.waitRef(p, "feature/bad", func(r refView) bool { return r.State == "failing" && r.Failure == "remote_rejected" && r.Attempts >= 1 })
-	if got := h.remote.tip("refs/heads/feature/bad"); got != "" {
-		t.Fatalf("the rejected ref is at %q", got)
-	}
-	if r, _ := p.status().ref("feature/bad"); strings.Contains(r.Message, "refused\n") || r.Message == "" {
-		t.Fatalf("message = %q", r.Message)
-	}
-	if v := p.status(); v.State != "failing" {
-		t.Fatalf("mirror state = %s, want failing", v.State)
-	}
-
-	h.remote.allowAll()
-	c2 := h.commit("a.txt", "2")
-	h.push("feature/bad", c2, false)
-	h.relay(p)
-	h.waitTip("feature/bad", c2)
-	h.waitRef(p, "feature/bad", func(r refView) bool { return r.State == "synced" && r.Failure == "" && r.Attempts == 0 })
-}
-
 func TestMirrorBacksOffOnTheInjectedClockAndTakesNewsAtOnce(t *testing.T) {
 	h := newHarness(t)
 	h.remote.rejectRef("refs/heads/feature/bad")
@@ -304,50 +387,6 @@ func TestMirrorBacksOffOnTheInjectedClockAndTakesNewsAtOnce(t *testing.T) {
 	h.waitRef(p, "feature/bad", func(r refView) bool { return r.State == "synced" })
 }
 
-func TestMirrorReadsTheRemoteCredentialAtEachPush(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
-	h.skip()
-	h.remote.pass.set("rotated")
-	c1 := h.commit("a.txt", "1")
-	h.push("feature/a", c1, false)
-	h.relay(p)
-	h.waitRef(p, "feature/a", func(r refView) bool { return r.Failure == "remote_auth" })
-
-	h.writeFile("remote.cred", "rotated\n")
-	c2 := h.commit("a.txt", "2")
-	h.push("feature/a", c2, false)
-	h.relay(p)
-	h.waitTip("feature/a", c2)
-}
-
-func TestMirrorReportsAnUnreachableRemote(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
-	h.skip()
-	h.remote.srv.Close()
-	h.push("feature/a", h.commit("a.txt", "1"), false)
-	h.relay(p)
-	h.waitRef(p, "feature/a", func(r refView) bool { return r.Failure == "remote_unreachable" })
-}
-
-func TestMirrorIgnoresRefsThatNoPatternMatches(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{refs: []string{"feature/*"}})
-	h.skip()
-	c1 := h.commit("a.txt", "1")
-	h.push("other/x", c1, false)
-	h.push("feature/y", c1, false)
-	h.relay(p)
-	h.waitTip("feature/y", c1)
-	if got := h.remote.tip("refs/heads/other/x"); got != "" {
-		t.Fatalf("unmatched ref reached the remote at %s", got)
-	}
-	if _, found := p.status().ref("other/x"); found {
-		t.Fatal("an unmatched ref has state")
-	}
-}
-
 func TestMirrorPrunesUnknownRemoteRefsOnlyWhenAsked(t *testing.T) {
 	for _, prune := range []bool{false, true} {
 		t.Run(fmt.Sprint("prune_unknown=", prune), func(t *testing.T) {
@@ -370,47 +409,6 @@ func TestMirrorPrunesUnknownRemoteRefsOnlyWhenAsked(t *testing.T) {
 				t.Fatalf("an unmatched remote ref changed to %q", got)
 			}
 		})
-	}
-}
-
-func TestMirrorReconcileOnRequestRepairsDrift(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
-	h.skip()
-	c1 := h.commit("a.txt", "1")
-	h.push("feature/a", c1, false)
-	h.relay(p)
-	h.waitTip("feature/a", c1)
-
-	gitIn(t, h.remote.dir, "update-ref", "-d", "refs/heads/feature/a")
-	n := h.count("reconcile")
-	if code, _ := p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", h.token(token.ScopeOperator, ""), nil, nil); code != http.StatusAccepted {
-		t.Fatalf("reconcile answered %d", code)
-	}
-	h.waitFor("reconcile", func() bool { return h.count("reconcile") > n })
-	h.waitTip("feature/a", c1)
-}
-
-func TestMirrorFreesTheObjectsOfADeletedRef(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
-	h.skip()
-	c1 := h.commit("a.txt", "1")
-	h.push("feature/a", c1, false)
-	h.relay(p)
-	h.waitTip("feature/a", c1)
-	clone, _ := filepath.Glob(filepath.Join(h.dataDir, "clones", "*.git"))
-	if len(clone) != 1 {
-		t.Fatalf("clones = %v", clone)
-	}
-	gitIn(t, clone[0], "cat-file", "-e", c1)
-
-	n := h.count("batch")
-	h.deleteRef("feature/a")
-	h.relay(p)
-	h.waitFor("the delete batch", func() bool { return h.count("batch") > n && h.remote.tip("refs/heads/feature/a") == "" })
-	if err := exec_(clone[0], "cat-file", "-e", c1); err == nil {
-		t.Fatal("the commit of the deleted ref is still in the clone")
 	}
 }
 
