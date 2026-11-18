@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseFile(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("a", 41)
 	tests := []struct {
 		name, in, wantErr string
@@ -47,6 +48,7 @@ func TestParseFile(t *testing.T) {
 }
 
 func TestHashIsTheSHA256OfTheCompactObject(t *testing.T) {
+	t.Parallel()
 	c := check.Check{Name: "unit", Run: []string{"go", "test", "./..."}, TimeoutSeconds: 1800}
 	const want = "e96efb8644b30bf8e97e4c69568e7c64b00173d095c4e85942f0e210a4b561a6"
 	if got := c.Hash(); got != want {

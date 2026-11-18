@@ -103,27 +103,34 @@ func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
 	return l, nil
 }
 
-// Get returns a land. With a positive wait it returns when the state of the land changes, or when the wait ends.
-func (s *Service) Get(ctx context.Context, id string, wait time.Duration) (Land, bool, error) {
+// Get returns a land. The baseline state is known, or the state of the land now when known is empty. With a positive wait,
+// Get returns when the state differs from the baseline, or when the wait ends.
+func (s *Service) Get(ctx context.Context, id string, wait time.Duration, known State) (Land, bool, error) {
 	changed := s.signal()
 	first, ok, err := s.store.Land(ctx, id)
-	if err != nil || !ok || wait <= 0 || first.State.Ended() {
+	if err != nil || !ok {
 		return first, ok, err
+	}
+	if known == "" {
+		known = first.State
+	}
+	if wait <= 0 || first.State != known || first.State.Ended() {
+		return first, true, nil
 	}
 	timeout := s.clock.After(min(wait, MaxWait))
 	for {
 		select {
-		case <-s.done():
-			return s.reread(ctx, id)
 		case <-changed:
 			changed = s.signal()
 		case <-timeout:
+			return s.reread(ctx, id)
+		case <-s.done():
 			return s.reread(ctx, id)
 		case <-ctx.Done():
 			return first, true, ctx.Err()
 		}
 		cur, ok, err := s.store.Land(ctx, id)
-		if err != nil || !ok || cur.State != first.State {
+		if err != nil || !ok || cur.State != known {
 			return cur, ok, err
 		}
 	}

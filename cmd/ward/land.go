@@ -92,7 +92,7 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		return code
 	}
 	announced := false
-	for first := true; ; first = false {
+	for {
 		if !announced && cur.State == "checking" {
 			announced = true
 			for _, ck := range cur.Checks {
@@ -108,14 +108,7 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		case "failed":
 			return printLandError(stderr, cur.Error)
 		}
-		path := "/v1/lands/" + cur.ID
-		switch {
-		case first:
-		case cur.State == "queued":
-			path += "?wait=1"
-		default:
-			path += "?wait=" + strconv.Itoa(landWaitSecs)
-		}
+		path := "/v1/lands/" + cur.ID + "?wait=" + strconv.Itoa(landWaitSecs) + "&state=" + cur.State
 		if cur, code = c.call(ctx, http.MethodGet, path, nil, stderr); code != 0 {
 			return code
 		}

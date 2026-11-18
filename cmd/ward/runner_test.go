@@ -143,10 +143,10 @@ func (h *harness) postLand(p *wardProc, ref, branch string, extra map[string]any
 	return l
 }
 
-// awaitLand reads the land until it is in state want. A wait ends at a change, so a change between two reads costs one short wait.
+// awaitLand reads the land until it is in state want. Each wait names the state that the last read saw.
 func (h *harness) awaitLand(p *wardProc, id, want string) landState {
 	h.t.Helper()
-	for query := ""; ; query = "?wait=1" {
+	for query := ""; ; {
 		code, l := p.landGet(h.landToken(h.repo), id, query)
 		switch {
 		case code != http.StatusOK:
@@ -156,6 +156,7 @@ func (h *harness) awaitLand(p *wardProc, id, want string) landState {
 		case l.State == "failed" || l.State == "landed":
 			h.t.Fatalf("land ended in %s (error %+v), want %s", l.State, l.Error, want)
 		}
+		query = "?wait=30&state=" + l.State
 	}
 }
 

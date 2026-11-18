@@ -170,6 +170,7 @@ func TestLandJudgesABranchByTheCheckFileOfTheTip(t *testing.T) {
 }
 
 func TestLandFailsWithLandInvalidWhenTheCheckFileOrTheRunnerIsMissing(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		file    string
 		runner  bool
@@ -323,7 +324,7 @@ func TestLandCommandWaitsForChecksAndReportsAFailedCheck(t *testing.T) {
 	}
 }
 
-func TestLandReadEndsAtAStateChangeOrWhenTheWaitEnds(t *testing.T) {
+func TestLandReadEndsAtOnceForAnOldStateAtAChangeOrWhenTheWaitEnds(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
 	clk, waitTimer := newTickClock(t)
 	p := h.startWard(wardOpts{runner: run, clock: clk})
@@ -345,7 +346,10 @@ func TestLandReadEndsAtAStateChangeOrWhenTheWaitEnds(t *testing.T) {
 		t.Fatalf("a wait that ended with no change answered %+v", got)
 	}
 
-	changed := read("30")
+	if _, got := p.landGet(h.landToken(h.repo), l.ID, "?wait=30&state=queued"); got.State != "checking" {
+		t.Fatalf("a wait that named an old state answered %+v", got)
+	}
+	changed := read("30&state=checking")
 	waitTimer(30 * time.Second)
 	p.answer(req, "pass", "ok")
 	if got := <-changed; got.State != "landing" && got.State != "landed" {

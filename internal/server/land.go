@@ -107,10 +107,17 @@ func (s *Server) getLand(w http.ResponseWriter, r *http.Request) {
 		}
 		wait = time.Duration(n) * time.Second
 	}
+	known := land.State(r.URL.Query().Get("state"))
+	switch known {
+	case "", land.Queued, land.Checking, land.Landing, land.Landed, land.Failed:
+	default:
+		writeError(w, codeInvalidBody, "state is queued, checking, landing, landed or failed")
+		return
+	}
 	id := r.PathValue("id")
-	l, ok, err := s.d.Land.Get(r.Context(), id, 0)
+	l, ok, err := s.d.Land.Get(r.Context(), id, 0, "")
 	if err == nil && ok && l.Repo == c.Repo && wait > 0 {
-		l, ok, err = s.d.Land.Get(r.Context(), id, wait)
+		l, ok, err = s.d.Land.Get(r.Context(), id, wait, known)
 	}
 	switch {
 	case r.Context().Err() != nil:
