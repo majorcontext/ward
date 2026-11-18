@@ -29,6 +29,11 @@ func TestParseFile(t *testing.T) {
 		{"a null in run", `{"checks":[{"name":"a","run":["x",null]}]}`, "run must be", 0},
 		{"a number in run", `{"checks":[{"name":"a","run":[1]}]}`, "does not parse", 0},
 		{"a null timeout", `{"checks":[{"name":"a","run":["x"],"timeout_seconds":null}]}`, "timeout_seconds", 0},
+		{"comments and trailing commas", "// the checks\n{\n\t/* one */ \"checks\": [\n\t\t{\"name\": \"unit\", \"run\": [\"make\", \"test\",], \"timeout_seconds\": 60,}, // last\n\t],\n}\n", "", 60},
+		{"a block comment does not hide trailing text", `{"checks":[]} /* c */ x`, "does not parse", 0},
+		{"a line comment does not hide trailing text", "{\"checks\":[]} // c\nx", "does not parse", 0},
+		{"an unterminated block comment", `{"checks":[]} /* c`, "does not parse", 0},
+		{"a missing comma", `{"checks":[{"name":"a" "run":["x"]}]}`, "does not parse", 0},
 		{"text after the object", `{"checks":[]} garbage`, "does not parse", 0},
 		{"a closing brace after the object", `{"checks":[]}}`, "does not parse", 0},
 		{"white space after the object", "{\"checks\":[]}\n\n", "", 0},
@@ -64,5 +69,20 @@ func TestHashIsTheSHA256OfTheCompactObject(t *testing.T) {
 	const want = "e96efb8644b30bf8e97e4c69568e7c64b00173d095c4e85942f0e210a4b561a6"
 	if got := c.Hash(); got != want {
 		t.Fatalf("hash = %q, want %q", got, want)
+	}
+}
+
+func TestHuJSONFileHasTheChecksAndTheHashOfItsPlainJSONForm(t *testing.T) {
+	t.Parallel()
+	hu, err := check.ParseFile([]byte("{\n// unit tests\n\"checks\": [{\"name\": \"unit\", /* argv */ \"run\": [\"make\", \"test\",],},],\n}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := check.ParseFile([]byte(`{"checks":[{"name":"unit","run":["make","test"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hu) != 1 || len(plain) != 1 || hu[0].Hash() != plain[0].Hash() || hu[0].TimeoutSeconds != 1800 {
+		t.Fatalf("hujson %+v, plain %+v", hu, plain)
 	}
 }

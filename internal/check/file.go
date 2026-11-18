@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+
+	"github.com/tailscale/hujson"
 )
 
 const (
@@ -47,9 +49,14 @@ type rawCheck struct {
 // isNull reports whether raw is the JSON literal null.
 func isNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
-// ParseFile decodes and checks the content of a check file. It rejects an unknown field and every null, so that a
-// file of the wrong shape never passes as an empty or a valid list.
+// ParseFile decodes and checks the content of a check file. The file is HuJSON: it standardizes to JSON, and then the
+// strict decode runs. It rejects an unknown field and every null, so that a file of the wrong shape never passes as an
+// empty or a valid list.
 func ParseFile(data []byte) ([]Check, error) {
+	data, err := hujson.Standardize(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s does not parse: %w", FilePath, err)
+	}
 	var in struct {
 		Checks json.RawMessage `json:"checks"`
 	}
