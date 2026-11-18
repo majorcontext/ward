@@ -44,7 +44,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version | land REPO BRANCH]")
+		fmt.Fprintln(os.Stderr, "usage: ward [version | land [--ref REF] [--delete-branch] REPO BRANCH]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -42,6 +42,8 @@ jobs:
       - run: |
           helm template ward charts/ward -f charts/ward/ci/values.yaml | grep -A1 WARD_MIRRORS | grep -q github_app
       - run: |
+          helm template ward charts/ward -f charts/ward/ci/values.yaml | grep -A1 WARD_RUNNERS | grep -q secret_file
+      - run: |
           ! helm template ward charts/ward -f charts/ward/ci/no-mirrors.yaml --set 'mirrors[0].name=m' --set 'mirrors[0].repo=native:r' --set 'mirrors[0].remote=https://h/r.git' --set 'mirrors[0].refs={main}' --set publicUrl=http://w --set hookSecret.name=h
       - run: |
           ! helm template ward charts/ward -f charts/ward/ci/values.yaml --set trustedKeysSecret.name=x

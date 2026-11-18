@@ -96,6 +96,8 @@ func (s *Service) refusal(err error) outcome {
 		return outcome{kind: failed, err: &Error{Code: CodeConflict, Message: "the branch changes paths that changed on the ref", Details: map[string]any{"paths": paths}}}
 	case errors.Is(err, client.ErrLandInvalid), errors.Is(err, ErrNoMergeBase), errors.Is(err, client.ErrNotFound), errors.Is(err, client.ErrObjectTooLarge):
 		return outcome{kind: failed, err: &Error{Code: CodeInvalid, Message: "the branch cannot land on the ref"}}
+	case errors.Is(err, client.ErrLandStale):
+		return outcome{kind: retry, retryCode: CodeStale}
 	case errors.Is(err, client.ErrLandTimeout):
 		return outcome{kind: retry, retryCode: CodeTimeout}
 	case errors.Is(err, check.ErrNoRunner):
@@ -198,12 +200,12 @@ func (s *Service) await(ctx context.Context, l *Land, checks []check.Check, cand
 	}
 }
 
-// land is step 5.
+// land is step 5. Motte moves the ref only when the tree of the land is the tree that the checks judged.
 func (s *Service) land(ctx context.Context, merger *client.Client, l *Land, base, head string) outcome {
 	if err := s.save(l, Landing); err != nil {
 		return s.refusal(err)
 	}
-	res, err := merger.Land(ctx, l.Repo, api.LandRequest{Ref: l.Ref, Base: base, Head: head})
+	res, err := merger.Land(ctx, l.Repo, api.LandRequest{Ref: l.Ref, Base: base, Head: head, ExpectTree: l.Tree})
 	if err != nil {
 		return s.refusal(err)
 	}

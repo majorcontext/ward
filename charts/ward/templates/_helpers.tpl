@@ -42,3 +42,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- toJson $out -}}
 {{- end -}}
+
+{{/* ward.runners renders WARD_RUNNERS. Each secret is a file that the Deployment mounts under /var/run/ward/runners/INDEX. */}}
+{{- define "ward.runners" -}}
+{{- $out := list -}}
+{{- range $i, $r := .Values.runners -}}
+{{- $out = append $out (dict "repo" (required "runner: repo is required" $r.repo) "url" (required (printf "runner %s: url is required" $r.repo) $r.url) "secret_file" (printf "/var/run/ward/runners/%d/secret" $i) "env" (default "" $r.env)) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}

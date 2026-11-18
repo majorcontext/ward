@@ -100,6 +100,39 @@ func TestLandAsksAgainAfterAFailAndShowsTheCheckAsFlaky(t *testing.T) {
 	}
 }
 
+func TestLandChecksTheNewCandidateWhenAnotherWriterMovesTheRefDuringTheChecks(t *testing.T) {
+	h, run := newHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{runner: run})
+	base := h.seedChecked(unitChecks)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	moved := h.branchFrom(base, "feature/m", "b.txt", "b\n")
+	l := h.postLand(p, "main", "feature/x", nil)
+	first := run.next()
+	h.awaitLand(p, l.ID, "checking")
+	cur, err := h.readClient().Ref(t.Context(), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.motte.Client(h.motte.MergeGrant(t, h.repo)).SwapRef(t.Context(), "main", cur.Generation, moved); err != nil {
+		t.Fatal(err)
+	}
+
+	p.answer(first, "pass", "ok")
+	second := run.next()
+	if second.Tree == first.Tree || second.RequestID == first.RequestID {
+		t.Fatalf("the land asked about %+v again after the ref moved: first %+v", second, first)
+	}
+	if h.treeOf(h.mainTip()) == first.Tree {
+		t.Fatal("the land moved the ref to a tree that the moved ref did not produce")
+	}
+	p.answer(second, "pass", "ok")
+	done := h.awaitLand(p, l.ID, "landed")
+	h.git("fetch", "-q", "origin", "main")
+	if h.treeOf(h.mainTip()) != second.Tree || done.Tree != second.Tree || h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" {
+		t.Fatalf("land = %+v, main tree %s, checked tree %s", done, h.treeOf(h.mainTip()), second.Tree)
+	}
+}
+
 func TestLandSendsOneRequestForOneTreeWhenTwoLandsWait(t *testing.T) {
 	h, run := newHarness(t), newRunner(t)
 	p := h.startWard(wardOpts{runner: run})
