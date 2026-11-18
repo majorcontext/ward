@@ -141,6 +141,8 @@ A pattern has the rule of motte protected refs: a ref name, or a prefix that end
 
 A stored ref name maps to the git ref name that git clients see (see Git smart HTTP of motte): `main` is `refs/heads/main`, and a stored name that starts with `refs/` has that name. The mirror pushes to the same git ref name on the remote. A stored name under `refs/heads/` has no git name and is never mirrored.
 
+Only branches and tags are mirrored. In motte, a branch is a stored name that is bare, that is, does not start with `refs/`, and a tag is a stored name under `refs/tags/`. Every other stored name, such as `refs/pull/<n>/head`, `refs/changes/...` or `refs/notes/...`, is never created, changed or deleted on the remote, whatever the patterns say. A pattern only filters within the branches and tags, so `*` matches every branch and every tag. Reconcile, the remote listing and the seed ignore every other name on both sides.
+
 A ref that no pattern matches is never created, changed or deleted on the remote. ward does not set the default branch of the remote.
 
 ### Triggers
@@ -215,15 +217,19 @@ Unseeded. A motte repository is unseeded when `GET /v1/vcs/refs` lists exactly o
 Steps.
 
 1. Set the seed record to `started` and the mirror state to `seeding`.
-2. List the remote refs with `git ls-remote`. Fetch every ref that a pattern matches (see Which refs), branches and tags, into the clone as `refs/mirror/<git ref name>`, with the credential of the mirror (a file or a GitHub App token), in batches of 200 refspecs.
+2. List the remote refs with `git ls-remote`. Fetch every branch (`refs/heads/*`, stored as a bare name) and tag (`refs/tags/*`) that a pattern matches (see Which refs) into the clone as `refs/mirror/<git ref name>`, with the credential of the mirror (a file or a GitHub App token), in batches of 200 refspecs.
 3. Order the refs by the commit time of their tip, oldest first, then by name. For each ref, push to motte over git smart HTTP with a `merge` grant of 15 minutes. `main` has a lease on the commit that motte holds (`--force-with-lease=refs/heads/main:<root>`), and every other ref has a lease on absence, so it is a create. A ref that motte already holds at the tip is skipped, which makes a resumed seed repeat nothing.
 4. Set the seed record to `done`, remove the mirror state `seeding`, count the seed and request a Reconcile. Reconcile finds motte and the remote equal.
+
+A seed copies no other ref of the remote, such as `refs/pull/*`.
 
 A failed step retries with the backoff of Failure and backoff, with the mirror in the state `seeding`. A retry continues where the failed run stopped, and it writes only refs that ward wrote.
 
 Expected values. The state store holds, for each ref of the seed, the value that ward expects motte to hold: `commit`, the last value that ward wrote or found (empty for a ref that must be absent), and `next`, the value of a push that is under way and may have landed. The seed records `main` at the root commit when it starts. Before each push it records `next`, and after the push it records the value as `commit`. At each attempt, before any push, ward compares every ref of motte with these values. A ref that motte holds with a value that is neither `commit` nor `next`, a ref that has no record, or a recorded ref that motte lost, ends the seed as `seed_refused`. The status message names the ref. ward never overwrites a ref of motte that it did not write, and each push has a lease on the value that it expects.
 
 Chunks. A push to motte has limits (see Git smart HTTP of motte): a body of 64 MiB and a pack of 100000 objects. motte also limits the inflated data of a pack (64 MiB). ward keeps each push under `WARD_SEED_MAX_OBJECTS` objects, `WARD_SEED_MAX_BYTES` packed bytes and `WARD_SEED_MAX_INFLATED_BYTES` bytes of whole objects, which default to half of those limits. For one ref, ward lists the commits of its first-parent history that no commit that motte holds reaches. It measures a push with `git rev-list --objects` as the objects, the packed bytes and the sum of the object sizes (`git cat-file --batch-check`) of the commit that no earlier push reaches. It pushes the newest first-parent commit that fits, then repeats from there, so each push moves the ref forward by a fast-forward and holds the objects that the commit reaches through all its parents. The planner finds each commit with a binary search, because the cost grows with the commit. The final push is the tip itself, and an annotated tag object follows its commit. A single commit that does not fit alone is pushed alone, and motte decides. A ref therefore shows intermediate commits in motte while its seed runs, and an event of motte follows each push.
+
+Seed cleanup. An earlier version of ward seeded refs that are not branches or tags. At each start, for each mirror that has a seed record and no cleanup record, ward reads the refs of motte and, for each ref of the seed record that is not mirrorable (see Which refs), deletes it from motte with a push under a `merge` grant of 15 minutes and a lease on the value that motte holds. It deletes a ref only when that value is the `commit` or the `next` of the seed record. It skips and logs a ref that motte holds at another value, and a ref that the seed record does not list, so it never deletes a ref that ward did not write. Then, in one transaction, it removes those refs from the seed record and from the ref state of the mirror, and records the cleanup, so the cleanup runs once. A failed cleanup retries with the backoff of Failure and backoff before any worker starts.
 
 The mirror does no push to the remote while it seeds, and a ref event that arrives during the seed is a trigger that the worker acts on after it.
 
@@ -235,7 +241,7 @@ The state store holds these records:
 |---|---|
 | Service | `subscription_id`, `events_cursor`, and `last_seq` for each partition (0 to 63). |
 | Mirror | `name`, set when the first Reconcile of the mirror ends. |
-| Seed | `mirror`, `state` (`started` or `done`), and for each ref of the seed `commit` and `next` (see Seed). |
+| Seed | `mirror`, `state` (`started` or `done`), for each ref of the seed `commit` and `next`, and the cleanup record (see Seed). |
 | Ref of a mirror | `mirror`, `ref` (stored name), `last_partition`, `last_seq`, `dirty` (boolean), `version`, `dirty_since`, `pushed` (commit, empty, or unset), `attempts`, `next_attempt`, `failure` (class, or empty), `message`, `failure_since`, `pushed_at`. |
 
 A trigger sets `dirty` on the ref record, increments `version`, sets `dirty_since` when the ref was clean, sets `next_attempt` to now, and updates `last_partition` and `last_seq` of the ref record when its event is newer, by `seq` in one partition. `pushed` is unset until a push or a Reconcile gives it a value, and an empty value means that the ref is absent on the remote. A worker clears `dirty` only in the transaction that records a push result, and only when `version` is the value that the worker read before it read the ref, so no trigger arrived since. A trigger that arrives during a push therefore leaves the ref dirty, and the worker acts again. The state is small and holds no secret. The clone cache is not state: ward can lose all of it.

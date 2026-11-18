@@ -309,3 +309,78 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seed
 	}
 	return nil
 }
+
+// cleanSeed deletes from motte the refs that an earlier seed wrote and that are not mirrorable, once. It deletes a ref
+// only while motte holds a value that the seed record says ward wrote, and it never touches any other ref.
+func (e *Engine) cleanSeed(ctx context.Context, en Entry) error {
+	if done, err := e.store.SeedCleaned(ctx, en.Name); done || err != nil {
+		return err
+	}
+	if state, err := e.store.Seed(ctx, en.Name); state == "" || err != nil {
+		return err
+	}
+	expect, err := e.store.SeedRefs(ctx, en.Name)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for name := range expect {
+		if !Mirrorable(name) {
+			stale = append(stale, name)
+		}
+	}
+	sort.Strings(stale)
+	if len(stale) > 0 {
+		if err := e.deleteSeeded(ctx, en, stale, expect); err != nil {
+			return err
+		}
+	}
+	return e.store.FinishSeedCleanup(ctx, en.Name, stale)
+}
+
+func (e *Engine) deleteSeeded(ctx context.Context, en Entry, stale []string, expect map[string]SeedRef) error {
+	refs, err := e.motte.reader(en.Repo).Refs(ctx)
+	if err != nil {
+		return err
+	}
+	current := map[string]string{}
+	for _, r := range refs {
+		current[r.Name] = r.Commit
+	}
+	var specs []pushSpec
+	for _, name := range stale {
+		cur, x := current[name], expect[name]
+		git, named := GitRef(name)
+		switch {
+		case cur == "" || !named:
+		case cur == x.Commit || cur == x.Next:
+			specs = append(specs, pushSpec{Ref: git, Lease: cur, LeaseSet: true})
+		default:
+			e.log.Warn("seed cleanup skipped a ref that motte holds at another value", "mirror", en.Name, "ref", name)
+		}
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	lock := e.repos.get(en.Repo)
+	lock.Lock()
+	defer lock.Unlock()
+	clone, err := e.ensureClone(ctx, en.Repo)
+	if err != nil {
+		return err
+	}
+	creds, err := e.motte.mergeCreds(en.Repo)
+	if err != nil {
+		return err
+	}
+	res, err := e.git.push(ctx, clone, e.motte.gitURL(en.Repo), creds, specs)
+	if err != nil {
+		return err
+	}
+	for _, s := range specs {
+		if !hasResult(res, s.Ref) || res[s.Ref] != outcomeOK {
+			return fmt.Errorf("motte refused the delete of %s", s.Ref)
+		}
+	}
+	return nil
+}

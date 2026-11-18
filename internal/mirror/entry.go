@@ -125,9 +125,18 @@ func validPattern(p string) bool {
 	return strings.Count(p, "*") == 0 || (strings.Count(p, "*") == 1 && strings.HasSuffix(p, "*"))
 }
 
-// Matches reports whether a pattern of e matches the stored ref name and the name has a git name.
+// Mirrorable reports whether a stored ref name is a branch (a bare name) or a tag (under refs/tags/). ward never
+// touches any other name on the remote.
+func Mirrorable(stored string) bool {
+	if name, ok := strings.CutPrefix(stored, "refs/tags/"); ok {
+		return name != ""
+	}
+	return stored != "" && !strings.HasPrefix(stored, "refs/")
+}
+
+// Matches reports whether a pattern of e matches the stored ref name and the name is mirrorable.
 func (e Entry) Matches(stored string) bool {
-	if _, ok := GitRef(stored); !ok {
+	if !Mirrorable(stored) {
 		return false
 	}
 	for _, p := range e.Refs {
@@ -156,7 +165,7 @@ func GitRef(stored string) (string, bool) {
 // StoredRef is the inverse of GitRef.
 func StoredRef(git string) (string, bool) {
 	if name, ok := strings.CutPrefix(git, "refs/heads/"); ok {
-		return name, name != "" && !strings.HasPrefix(name, "refs/")
+		return name, !strings.HasPrefix(name, "refs/") && Mirrorable(name)
 	}
-	return git, strings.HasPrefix(git, "refs/")
+	return git, strings.HasPrefix(git, "refs/tags/") && Mirrorable(git)
 }

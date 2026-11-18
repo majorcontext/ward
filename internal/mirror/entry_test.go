@@ -39,7 +39,7 @@ func TestMatchesAndGitRef(t *testing.T) {
 			t.Errorf("StoredRef(%q) = %q, %v, want %q", git, got, ok, want)
 		}
 	}
-	for _, git := range []string{"HEAD", "refs/heads/", "refs/heads/refs/x"} {
+	for _, git := range []string{"HEAD", "refs/heads/", "refs/heads/refs/x", "refs/heads/refs/tags/v1"} {
 		if _, ok := mirror.StoredRef(git); ok {
 			t.Errorf("StoredRef(%q) is ok", git)
 		}

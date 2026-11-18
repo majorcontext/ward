@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS partitions (partition INTEGER PRIMARY KEY, last_seq I
 CREATE TABLE IF NOT EXISTS mirrors (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS seeds (mirror TEXT PRIMARY KEY, state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS seed_refs (mirror TEXT NOT NULL, ref TEXT NOT NULL, commit_sha TEXT NOT NULL, next TEXT NOT NULL, PRIMARY KEY (mirror, ref));
+CREATE TABLE IF NOT EXISTS seed_cleanups (mirror TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS refs (
 	mirror TEXT NOT NULL,
 	ref TEXT NOT NULL,
@@ -336,6 +337,26 @@ func (s *Store) SeedRefs(ctx context.Context, name string) (map[string]mirror.Se
 func (s *Store) SetSeedRef(ctx context.Context, name, ref string, r mirror.SeedRef) error {
 	return s.exec(ctx, `INSERT INTO seed_refs (mirror, ref, commit_sha, next) VALUES (?, ?, ?, ?)
 		ON CONFLICT (mirror, ref) DO UPDATE SET commit_sha = excluded.commit_sha, next = excluded.next`, name, ref, r.Commit, r.Next)
+}
+
+func (s *Store) SeedCleaned(ctx context.Context, name string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM seed_cleanups WHERE mirror = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
+func (s *Store) FinishSeedCleanup(ctx context.Context, name string, refs []string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		for _, ref := range refs {
+			for _, table := range []string{"refs", "seed_refs"} {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE mirror = ? AND ref = ?`, name, ref); err != nil {
+					return err
+				}
+			}
+		}
+		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO seed_cleanups (mirror) VALUES (?)`, name)
+		return err
+	})
 }
 
 func (s *Store) StateRefs(ctx context.Context, name string) ([]string, error) {
