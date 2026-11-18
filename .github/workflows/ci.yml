@@ -17,6 +17,28 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
+      - name: temporary timing probe
+        run: |
+          go test -race -count=1 -json ./cmd/ward > /tmp/all.json || true
+          python3 - <<'PY'
+          import json
+          t = {}
+          pkg = 0
+          for line in open('/tmp/all.json'):
+              try: e = json.loads(line)
+              except Exception: continue
+              if e.get('Action') in ('pass', 'fail'):
+                  if e.get('Test'): t[e['Test']] = e.get('Elapsed', 0)
+                  else: pkg = e.get('Elapsed', 0)
+          tops = {k: v for k, v in t.items() if '/' not in k}
+          print('PROBE package', pkg, 'tests', len(tops), 'sum', round(sum(tops.values()), 2))
+          for k, v in sorted(tops.items(), key=lambda kv: -kv[1]): print('PROBE', round(v, 2), k)
+          PY
+          echo PROBE land-only; go test -race -count=1 -run 'TestLand|TestResult|TestRunner' ./cmd/ward | sed 's/^/PROBE /'
+          echo PROBE mirror-only; go test -race -count=1 -run 'TestMirror|TestSeed' ./cmd/ward | sed 's/^/PROBE /'
+          go test -race -count=1 -c -o /tmp/ward.test ./cmd/ward
+          cd cmd/ward && /tmp/ward.test -test.count=1 -test.cpuprofile /tmp/cpu.prof > /dev/null 2>&1; cd ../..
+          go tool pprof -top -cum -nodecount=45 /tmp/ward.test /tmp/cpu.prof 2>&1 | sed 's/^/PROBE /'
       - run: go build ./...
       - run: go vet ./...
       - run: go run ./internal/lint/cmd/lint ./...
