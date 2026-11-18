@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,9 +156,11 @@ type harness struct {
 	callerSK ed25519.PrivateKey
 	callerPK ed25519.PublicKey
 
-	started bool
-	mu      sync.Mutex
-	counts  map[string]int
+	started    bool
+	motteProxy *httptest.Server
+	motteGate  atomic.Pointer[gate]
+	mu         sync.Mutex
+	counts     map[string]int
 }
 
 func newHarness(t *testing.T) *harness {
@@ -249,6 +253,11 @@ type wardOpts struct {
 	budget string
 	ttl    string
 	clock  mirror.Clock
+	// relative gives ward a data directory and a credential file under the working directory of the test, as relative paths.
+	relative bool
+	// proxied sends ward to motte through a proxy that holdMotte can hold.
+	proxied bool
+	noWait  bool
 }
 
 type wardProc struct {
@@ -274,12 +283,29 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	}
 	seed := base64.StdEncoding.EncodeToString(h.motte.Operator.Key.Seed())
 	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator"}}})
+	dataDir, credFile := h.dataDir, h.credFile()
+	if o.relative {
+		dir, err := os.MkdirTemp(".", "rel-")
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		h.t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		dataDir = filepath.Join(dir, "data")
+		credFile = filepath.Join(dir, "cred")
+		if err := os.WriteFile(credFile, []byte(remotePass+"\n"), 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	}
 	entries, _ := json.Marshal([]mirror.Entry{{Name: mirrorName, Repo: h.repo, Remote: "https://remote.invalid/r.git", Refs: o.refs,
-		Username: remoteUser, CredentialFile: h.credFile(), PruneUnknown: o.prune}})
+		Username: remoteUser, CredentialFile: credFile, PruneUnknown: o.prune}})
+	motteURL := h.motte.URL
+	if o.proxied {
+		motteURL = h.proxy().URL
+	}
 	ln := h.listen()
 	h.addr = ln.Addr().String()
 	env := map[string]string{
-		"WARD_DATA_DIR": h.dataDir, "WARD_MOTTE_URL": h.motte.URL, "WARD_MOTTE_KID": "cp",
+		"WARD_DATA_DIR": dataDir, "WARD_MOTTE_URL": motteURL, "WARD_MOTTE_KID": "cp",
 		"WARD_MOTTE_KEY_FILE": h.writeFile("motte.key", seed), "WARD_PUBLIC_URL": "http://" + h.addr,
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
 		"WARD_MIRRORS": string(entries), "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
@@ -307,6 +333,9 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		})
 	}
 	h.t.Cleanup(p.stop)
+	if o.noWait {
+		return p
+	}
 	h.waitFor("ward to start", func() bool { return h.count("init") > before })
 	if first {
 		h.waitFor("the first reconcile", func() bool { return h.count("reconcile") > reconciles })
@@ -516,4 +545,29 @@ type testLog struct{ t testing.TB }
 func (l testLog) Write(b []byte) (int, error) {
 	l.t.Log(strings.TrimSpace(string(b)))
 	return len(b), nil
+}
+
+// proxy starts a reverse proxy in front of motte. holdMotte makes it hold the subscription listing.
+func (h *harness) proxy() *httptest.Server {
+	if h.motteProxy != nil {
+		return h.motteProxy
+	}
+	target, _ := url.Parse(h.motte.URL)
+	rp := httputil.NewSingleHostReverseProxy(target)
+	h.motteProxy = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g := h.motteGate.Load(); g != nil && r.URL.Path == "/v1/subscriptions" {
+			g.entered <- struct{}{}
+			<-g.release
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	h.t.Cleanup(h.motteProxy.Close)
+	return h.motteProxy
+}
+
+func (h *harness) holdMotte() (<-chan struct{}, func()) {
+	h.proxy()
+	g := &gate{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	h.motteGate.Store(g)
+	return g.entered, func() { h.motteGate.Store(nil); close(g.release) }
 }

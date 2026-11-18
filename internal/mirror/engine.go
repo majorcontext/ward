@@ -61,6 +61,8 @@ type Engine struct {
 	want    wants
 	ctrl    chan struct{}
 	workers map[string]*worker
+	// pending holds the Reconcile requests that came before the worker of a mirror started.
+	pending map[string]bool
 }
 
 type wants struct{ init, catchup, reset bool }
@@ -88,6 +90,7 @@ func New(cfg Config, store Store, opts Options) *Engine {
 		repos:   repoLocks{m: map[string]*sync.Mutex{}},
 		ctrl:    make(chan struct{}, 1),
 		workers: map[string]*worker{},
+		pending: map[string]bool{},
 	}
 	for _, en := range cfg.Mirrors {
 		e.entries[en.Name] = en
@@ -135,7 +138,9 @@ func (e *Engine) RequestReconcile(name string) bool {
 		if _, ok := e.entries[name]; !ok {
 			return false
 		}
-		e.request(func(w *wants) { w.init = true })
+		e.mu.Lock()
+		e.pending[name] = true
+		e.mu.Unlock()
 		return true
 	}
 	w.requestReconcile()
@@ -233,6 +238,10 @@ func (e *Engine) startWorkers(ctx context.Context, wg *sync.WaitGroup) {
 		}
 		w := newWorker(e, en)
 		e.workers[en.Name] = w
+		if e.pending[en.Name] {
+			delete(e.pending, en.Name)
+			w.requestReconcile()
+		}
 		wg.Go(func() { w.run(ctx) })
 	}
 }

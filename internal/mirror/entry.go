@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -47,6 +48,11 @@ func ParseEntries(raw []byte) ([]Entry, error) {
 			return nil, fmt.Errorf("mirror %q: name repeats", e.Name)
 		}
 		seen[e.Name] = true
+		abs, err := filepath.Abs(e.CredentialFile)
+		if err != nil {
+			return nil, fmt.Errorf("mirror %q: credential_file: %w", e.Name, err)
+		}
+		e.CredentialFile = abs
 		if e.Username == "" {
 			e.Username = defaultUsername
 		}

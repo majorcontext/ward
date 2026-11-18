@@ -114,7 +114,7 @@ The mirror removes all three. It pushes from one full clone that ward owns, with
 | `credential_file` | Path of a file that holds the password or token of the remote. Required. |
 | `prune_unknown` | Optional. Default false. See Reconcile. |
 
-Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. The service refuses to start on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
+Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. ward resolves `WARD_DATA_DIR`, `WARD_STATE_FILE` and each `credential_file` to absolute paths at start, because git runs with the clone as its working directory. The service refuses to start on a path that it cannot resolve, on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
 
 ### Which refs
 
@@ -180,7 +180,7 @@ A failed Reconcile leaves the mirror unreconciled and retries with the same back
 
 - At the first start of a mirror, that is when the state store has no record of its name.
 - After a Reset.
-- On the request of an operator: `POST /v1/mirrors/{name}/reconcile`.
+- On the request of an operator: `POST /v1/mirrors/{name}/reconcile`. A request that comes before the worker of the mirror starts stays pending and the worker runs it when it starts.
 - For one ref, when a push to the remote is refused as stale because the remote moved outside ward (see Action on a ref).
 
 ward never compares the remote with the state on a timer. A change that someone makes on the remote outside ward stays until the next push of that ref, which the lease catches, or until an operator reconciles.
@@ -235,6 +235,7 @@ ward checks disk use only when a worker ends a push batch. It starts no timer fo
 
 - A clone that has no dirty ref and was not used for `WARD_CLONE_IDLE_TTL` is deleted. A worker marks a clone as used by setting the modification time of its directory. The next trigger fetches it again.
 - When the cache uses more than `WARD_CLONE_DISK_BUDGET`, ward deletes idle clones, least recently used first, until it fits. A clone that a worker uses, or that has a dirty ref, is never deleted. If the budget is still exceeded, ward keeps working, reports `ward_mirror_disk_over_budget` and logs it.
+- A clone of a repository that no configured mirror names is deleted.
 - After a batch that deleted a ref, the worker runs `git gc --prune=now` on the clone, which frees the objects of the deleted ref.
 
 ### Failure and backoff

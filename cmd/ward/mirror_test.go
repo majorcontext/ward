@@ -535,3 +535,47 @@ func exec_(dir string, args ...string) error {
 	}
 	return gitErr(dir, args...)
 }
+
+func TestMirrorResolvesRelativePaths(t *testing.T) {
+	h := newHarness(t)
+	p := h.startWard(wardOpts{relative: true})
+	h.skip()
+	c1 := h.commit("a.txt", "1")
+	h.push("feature/a", c1, false)
+	h.relay(p)
+	h.waitTip("feature/a", c1)
+}
+
+func TestMirrorKeepsAReconcileRequestMadeBeforeStartFinishes(t *testing.T) {
+	h := newHarness(t)
+	p := h.startWard(wardOpts{})
+	p.stop()
+	entered, release := h.holdMotte()
+	n := h.count("reconcile")
+	p = h.startWard(wardOpts{proxied: true, noWait: true})
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second): //lint:allow wallclock a wait on another process that no bubble holds
+		t.Fatal("ward never asked motte for its subscriptions")
+	}
+	if code, _ := p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", h.token(token.ScopeOperator, ""), nil, nil); code != http.StatusAccepted {
+		t.Fatalf("reconcile answered %d", code)
+	}
+	release()
+	h.waitFor("the reconcile", func() bool { return h.count("reconcile") > n })
+}
+
+func TestMirrorDeletesClonesOfMirrorsThatAreNoLongerConfigured(t *testing.T) {
+	h := newHarness(t)
+	stray := filepath.Join(h.dataDir, "clones", "0123456789abcdef.git")
+	gitIn(t, h.dataDir, "init", "--bare", "-q", stray)
+	p := h.startWard(wardOpts{})
+	h.skip()
+	c1 := h.commit("a.txt", "1")
+	h.push("feature/a", c1, false)
+	h.relay(p)
+	h.waitFor("the batch", func() bool { return h.count("batch") > 0 && h.remote.tip("refs/heads/feature/a") == c1 })
+	if _, err := os.Stat(stray); err == nil {
+		t.Fatal("the clone of an unconfigured repository is still there")
+	}
+}

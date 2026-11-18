@@ -43,10 +43,15 @@ func Load(getenv func(string) string) (Config, error) {
 			return c, fmt.Errorf("%s is required", name)
 		}
 	}
-	c.Mirror.DataDir = getenv("WARD_DATA_DIR")
+	var err error
+	if c.Mirror.DataDir, err = filepath.Abs(getenv("WARD_DATA_DIR")); err != nil {
+		return c, fmt.Errorf("WARD_DATA_DIR: %w", err)
+	}
 	c.StateFile = filepath.Join(c.Mirror.DataDir, "state.db")
 	if v := getenv("WARD_STATE_FILE"); v != "" {
-		c.StateFile = v
+		if c.StateFile, err = filepath.Abs(v); err != nil {
+			return c, fmt.Errorf("WARD_STATE_FILE: %w", err)
+		}
 	}
 	key, err := readPrivateKey(getenv("WARD_MOTTE_KEY_FILE"))
 	if err != nil {

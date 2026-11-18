@@ -69,15 +69,25 @@ func (e *Engine) afterBatch(ctx context.Context) {
 			dirty[en.Repo] = true
 		}
 	}
+	byDir := map[string]string{}
+	for _, en := range e.cfg.Mirrors {
+		byDir[filepath.Base(e.clonePath(en.Repo))] = en.Repo
+	}
 	var clones []cloneInfo
 	var total int64
-	for _, en := range e.cfg.Mirrors {
-		path := e.clonePath(en.Repo)
-		info, err := os.Stat(path)
-		if err != nil || seen(clones, en.Repo) {
+	entries, _ := os.ReadDir(e.clonesDir())
+	for _, d := range entries {
+		path := filepath.Join(e.clonesDir(), d.Name())
+		repo, configured := byDir[d.Name()]
+		if !configured {
+			_ = os.RemoveAll(path)
 			continue
 		}
-		c := cloneInfo{repo: en.Repo, path: path, size: dirSize(path), used: info.ModTime()}
+		info, err := d.Info()
+		if err != nil {
+			continue
+		}
+		c := cloneInfo{repo: repo, path: path, size: dirSize(path), used: info.ModTime()}
 		clones = append(clones, c)
 		total += c.size
 	}
@@ -115,13 +125,4 @@ func (e *Engine) afterBatch(ctx context.Context) {
 	} else {
 		e.m.overBudget.Set(0)
 	}
-}
-
-func seen(clones []cloneInfo, repo string) bool {
-	for _, c := range clones {
-		if c.repo == repo {
-			return true
-		}
-	}
-	return false
 }
