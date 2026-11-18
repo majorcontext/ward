@@ -262,20 +262,39 @@ func (m *Manager) send(ctx context.Context, req *Request) bool {
 	}
 }
 
-// awaitResult waits until the request ends, or until it is late, and then replaces it.
+// awaitResult waits until the request ends, or until it is late, and then replaces it. An error of the store does not end
+// the wait: it is logged and the step is tried again after the backoff.
 func (m *Manager) awaitResult(ctx context.Context, req Request) (Request, bool) {
 	late := m.clock.After(req.AcceptedAt.Add(time.Duration(req.Check.TimeoutSeconds)*time.Second + resendMargin).Sub(m.clock.Now()))
+	isLate, failures := false, 0
 	for {
 		changed := m.Changed()
 		cur, ok, err := m.store.Request(ctx, req.ID)
-		if err != nil || !ok || !cur.Open {
-			return Request{}, false
+		if err == nil {
+			if !ok || !cur.Open {
+				return Request{}, false
+			}
+			if isLate {
+				var next Request
+				if next, ok, err = m.resend(ctx, req); err == nil {
+					return next, ok
+				}
+			}
+		}
+		var retry <-chan time.Time
+		if err != nil {
+			if ctx.Err() != nil {
+				return Request{}, false
+			}
+			failures++
+			m.log.Warn("check request state not read", "request_id", req.ID, "attempt", failures)
+			retry = m.clock.After(backoff(failures))
 		}
 		select {
 		case <-changed:
 		case <-late:
-			next, ok, err := m.resend(ctx, req)
-			return next, err == nil && ok
+			isLate, late = true, nil
+		case <-retry:
 		case <-ctx.Done():
 			return Request{}, false
 		}
