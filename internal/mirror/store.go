@@ -98,6 +98,10 @@ type Store interface {
 	// SeedRefs returns what a seed expects motte to hold for each ref it has written or may write.
 	SeedRefs(ctx context.Context, mirror string) (map[string]SeedRef, error)
 	SetSeedRef(ctx context.Context, mirror, ref string, r SeedRef) error
+	// SeedCleaned reports whether the cleanup of the seed record has run.
+	SeedCleaned(ctx context.Context, mirror string) (bool, error)
+	// FinishSeedCleanup removes refs from the seed record and from the ref state of the mirror, and records the cleanup.
+	FinishSeedCleanup(ctx context.Context, mirror string, refs []string) error
 	HasMirror(ctx context.Context, name string) (bool, error)
 	StateRefs(ctx context.Context, mirror string) ([]string, error)
 	Refs(ctx context.Context, mirror, after string, limit int) ([]Ref, error)

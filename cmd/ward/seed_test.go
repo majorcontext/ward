@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/majorcontext/ward/internal/mirror"
+	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
 )
 
 // fillRemote gives the remote main with n commits, a branch and an annotated tag, and returns the tip of main.
@@ -235,4 +238,71 @@ func TestSeedRecoversFromACorruptClone(t *testing.T) {
 	clk.advance(10 * time.Minute)
 	h.waitFor("the seed", func() bool { return h.count("seed") > 0 })
 	h.wantSeeded()
+}
+
+func TestSeedAndMirrorIgnoreEveryRefThatIsNoBranchOrTag(t *testing.T) {
+	h := newHarness(t)
+	h.fillRemote(2, 0)
+	pull := h.remote.tip("refs/heads/main")
+	h.remote.setRef("refs/pull/1/head", pull)
+	h.remote.logPushes()
+	p := h.startWard(wardOpts{refs: []string{"*"}, seed: true})
+	h.wantSeeded()
+	h.waitFor("a synced mirror", func() bool { return p.status().State == "synced" })
+	if _, ok := h.motteRefs()["refs/pull/1/head"]; ok {
+		t.Fatal("the seed imported a pull ref")
+	}
+	if log := h.remote.pushLog(); log != "" {
+		t.Fatalf("ward wrote to the remote:\n%s", log)
+	}
+}
+
+func TestStartDeletesOnlyTheNonMirrorableRefsThatAnEarlierSeedWrote(t *testing.T) {
+	h := newHarness(t)
+	h.skip()
+	c := h.commit("a.txt", "1")
+	h.git("push", "-q", "origin", c+":refs/pull/1/head", c+":refs/pull/2/head")
+	store, err := mirrorsqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, step := range []error{
+		store.SetSeed(t.Context(), mirrorName, "done"),
+		store.SetSeedRef(t.Context(), mirrorName, "refs/pull/1/head", mirror.SeedRef{Commit: c}),
+		store.Reconciled(t.Context(), mirrorName, map[string]string{"refs/pull/1/head": ""}, now),
+		store.RecordFailure(t.Context(), mirrorName, "refs/pull/1/head", 1, mirror.ClassRemoteRejected, "rejected", now, now),
+		store.Close(),
+	} {
+		if step != nil {
+			t.Fatal(step)
+		}
+	}
+	p := h.startWard(wardOpts{refs: []string{"*"}, noWait: true})
+	h.waitFor("ward to start", func() bool { return h.count("init") > 0 })
+	refs := h.motteRefs()
+	if _, ok := refs["refs/pull/1/head"]; ok {
+		t.Fatal("the pull ref of the seed is still in motte")
+	}
+	if refs["refs/pull/2/head"] != c {
+		t.Fatalf("a ref that the seed did not write changed: %q", refs["refs/pull/2/head"])
+	}
+	if _, ok := p.status().ref("refs/pull/1/head"); ok {
+		t.Fatal("the state still holds the pull ref")
+	}
+	if n := p.metric(`ward_mirror_failing_refs{class="remote_rejected",mirror="m1"}`); n != 0 {
+		t.Fatalf("failing refs = %v, want 0", n)
+	}
+}
+
+func TestPruneUnknownNeverDeletesARemotePullRef(t *testing.T) {
+	h := newHarness(t)
+	h.fillRemote(1, 0)
+	pull := h.remote.tip("refs/heads/main")
+	h.remote.setRef("refs/pull/1/head", pull)
+	h.startWard(wardOpts{refs: []string{"*"}, prune: true})
+	h.waitFor("the branch pruned", func() bool { return h.remote.tip("refs/heads/feature/x") == "" })
+	if got := h.remote.tip("refs/pull/1/head"); got != pull {
+		t.Fatalf("remote pull ref = %q, want %q", got, pull)
+	}
 }

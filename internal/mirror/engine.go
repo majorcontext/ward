@@ -241,6 +241,9 @@ func (e *Engine) initialize(ctx context.Context, wg *sync.WaitGroup) error {
 	}
 	first := map[string]func(*worker){}
 	for _, en := range e.cfg.Mirrors {
+		if err := e.cleanSeed(ctx, en); err != nil {
+			return fmt.Errorf("seed cleanup of %s: %w", en.Name, err)
+		}
 		known, err := e.store.HasMirror(ctx, en.Name)
 		if err != nil {
 			return err
