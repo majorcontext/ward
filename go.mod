@@ -3,7 +3,7 @@ module github.com/majorcontext/ward
 go 1.27.4
 
 require (
-	github.com/majorcontext/motte v0.6.0
+	github.com/majorcontext/motte v0.7.0
 	github.com/prometheus/client_golang v1.25.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
@@ -52,5 +52,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace github.com/majorcontext/motte => ../motte-gate
