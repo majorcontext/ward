@@ -101,6 +101,9 @@ func (s *Server) getMirror(w http.ResponseWriter, r *http.Request) {
 		en, found = s.d.Engine.Mirror(r.PathValue("name"))
 	}
 	switch {
+	case c.Scope != token.ScopeRead && c.Scope != token.ScopeOperator:
+		writeError(w, codeForbidden, "forbidden")
+		return
 	case c.Scope == token.ScopeRead && (!found || c.Repo != en.Repo):
 		writeError(w, codeForbidden, "forbidden")
 		return

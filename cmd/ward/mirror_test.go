@@ -438,6 +438,7 @@ func TestServiceAnswersWithTheErrorEnvelopeAndChecksTokens(t *testing.T) {
 	p := h.startWard(wardOpts{})
 	op, read := h.token(token.ScopeOperator, ""), h.token(token.ScopeRead, h.repo)
 	other := h.token(token.ScopeRead, "native:other")
+	land := h.token(token.ScopeLand, h.repo)
 	path := "/v1/mirrors/" + mirrorName
 	tests := []struct {
 		name, method, path, tok string
@@ -456,6 +457,7 @@ func TestServiceAnswersWithTheErrorEnvelopeAndChecksTokens(t *testing.T) {
 		{"get as operator", "GET", path, op, 200, ""},
 		{"get own repo as read", "GET", path, read, 200, ""},
 		{"get other repo as read", "GET", path, other, 403, "forbidden"},
+		{"get as land", "GET", path, land, 403, "forbidden"},
 		{"get unknown as read", "GET", "/v1/mirrors/zzz", read, 403, "forbidden"},
 		{"get unknown as operator", "GET", "/v1/mirrors/zzz", op, 404, "not_found"},
 		{"bad cursor", "GET", path + "?cursor=!!", op, 400, "invalid_body"},
