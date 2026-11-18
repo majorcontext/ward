@@ -29,6 +29,8 @@ type Config struct {
 	PublicURL  string
 	HookSecret []byte
 	Mirrors    []Entry
+	// GitHubAPI is the API base URL for the GitHub App credential. Empty means DefaultGitHubAPI.
+	GitHubAPI  string
 	DiskBudget int64
 	IdleTTL    time.Duration
 	// Askpass is the program that git runs for the remote credential. It is the ward binary.
@@ -55,6 +57,7 @@ type Engine struct {
 	done    func(kind, mirror string)
 	m       *metrics
 	entries map[string]Entry
+	apps    map[string]*appSource
 	repos   repoLocks
 
 	mu      sync.Mutex
@@ -87,6 +90,7 @@ func New(cfg Config, store Store, opts Options) *Engine {
 		git:     &gitRunner{home: cfg.DataDir, askpass: cfg.Askpass, timeout: gitTimeout},
 		m:       newMetrics(store, opts.Clock),
 		entries: map[string]Entry{},
+		apps:    map[string]*appSource{},
 		repos:   repoLocks{m: map[string]*sync.Mutex{}},
 		ctrl:    make(chan struct{}, 1),
 		workers: map[string]*worker{},
@@ -94,6 +98,9 @@ func New(cfg Config, store Store, opts Options) *Engine {
 	}
 	for _, en := range cfg.Mirrors {
 		e.entries[en.Name] = en
+		if en.GitHubApp != nil {
+			e.apps[en.Name] = newAppSource(*en.GitHubApp, cfg.GitHubAPI, opts.Clock)
+		}
 	}
 	return e
 }

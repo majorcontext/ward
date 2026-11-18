@@ -22,7 +22,7 @@ Non-goals:
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
 | `internal/server` | HTTP routes, error envelope, token checks, status API. | W2 |
-| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers. `internal/mirror/sqlite` is its state store. | W2 |
+| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential. `internal/mirror/sqlite` is its state store. | W2, W3 |
 | `internal/telemetry` | OTLP trace export. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget, wall-clock analyzer. | W1 |
 | Change requests, review, merge queue, CI orchestration, import host | See Planned work. | Not built |
@@ -56,6 +56,7 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_HOOK_SECRET_FILE` | Path of the file that holds the subscription secret (16 to 256 bytes, with a final line break removed). Required when a mirror is configured. |
 | `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read` and `operator`. The service refuses to start on any other scope text. |
 | `WARD_MIRRORS` | JSON list of mirror entries (see Mirror, Configuration). Optional. |
+| `WARD_GITHUB_API_URL` | Base URL of the GitHub API for the GitHub App credential. An `http` or `https` URL. Default `https://api.github.com`. |
 | `WARD_STATE_FILE` | Path of the SQLite file of the state store. Default `WARD_DATA_DIR/state.db`. |
 | `WARD_CLONE_DISK_BUDGET` | Bytes that the clone cache may use. Default 20 GiB. |
 | `WARD_CLONE_IDLE_TTL` | Idle time after which a clone is deleted, as a Go duration. Default `168h`. |
@@ -111,10 +112,22 @@ The mirror removes all three. It pushes from one full clone that ward owns, with
 | `remote` | HTTPS URL of the remote repository. It holds no user information. The service refuses to start otherwise. |
 | `refs` | Non-empty list of ref patterns. See Which refs. |
 | `username` | User name for HTTP Basic on the remote. Optional. Default `x-access-token`. |
-| `credential_file` | Path of a file that holds the password or token of the remote. Required. |
+| `credential_file` | Path of a file that holds the password or token of the remote. Required unless `github_app` is set, and then it must be absent. |
+| `github_app` | Optional object `{app_id, installation_id, key_file}`. Makes a GitHub App installation the credential (see GitHub App credential). It excludes `credential_file` and `username`. |
 | `prune_unknown` | Optional. Default false. See Reconcile. |
 
-Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. ward resolves `WARD_DATA_DIR`, `WARD_STATE_FILE` and each `credential_file` to absolute paths at start, because git runs with the clone as its working directory. The service refuses to start on a path that it cannot resolve, on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
+Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. ward resolves `WARD_DATA_DIR`, `WARD_STATE_FILE` and each `credential_file` and `github_app.key_file` to absolute paths at start, because git runs with the clone as its working directory. The service refuses to start on a path that it cannot resolve, on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`, or a `github_app` with an `app_id` or `installation_id` that is not positive or a `key_file` that is not a PEM RSA private key. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
+
+### GitHub App credential
+
+With `github_app`, ward gets the password for the remote from a GitHub App installation instead of a file. The user name is `x-access-token`.
+
+1. ward signs an app JWT with the RSA private key of `key_file` (PKCS#1 or PKCS#8 PEM), algorithm RS256. `iss` is the app id as text, `iat` is 60 seconds before now and `exp` is 9 minutes after now. ward reads the key file at each exchange, so a rotated key applies with no restart.
+2. ward sends `POST {api}/app/installations/{installation_id}/access_tokens` with `Authorization: Bearer <JWT>`, where `{api}` is `WARD_GITHUB_API_URL`. It follows no redirect. It reads `token` and `expires_at` from the answer.
+3. ward keeps the token in memory, one for each mirror, until 5 minutes before `expires_at`, by the injected clock. It exchanges again on demand, when a push, a stale re-check or a Reconcile of that mirror needs a token and the cached one is too old. It starts no timer for this.
+4. For one git run, ward writes the token to a mode 0600 file in `WARD_DATA_DIR`, passes that file as `WARD_ASKPASS_FILE` (see Git access) and removes it when the run ends.
+
+A 401 or 403 from the token endpoint is the failure class `remote_auth`. A network failure, a timeout, any other status or an answer that holds no token is `remote_unreachable`. A key file that cannot be used is `local`. The failure follows Failure and backoff, so a failure shows in the status of the refs. A message and a log line never hold the token, the JWT or the key.
 
 ### Which refs
 
@@ -215,7 +228,7 @@ Read after write. A worker reads the ref from the metadata store of motte, so a 
 
 ### Git access
 
-ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process of motte only, never of the remote, (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS`. The helper is the `ward` binary, which git runs with the prompt as its only argument. The environment variables `WARD_ASKPASS_FILE` and `WARD_ASKPASS_USER` tell it to answer the user name or the content of the credential file, so it reads the file at each push.
+The remote credential is a file or a GitHub App token (see GitHub App credential). ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process of motte only, never of the remote, (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS`. The helper is the `ward` binary, which git runs with the prompt as its only argument. The environment variables `WARD_ASKPASS_FILE` and `WARD_ASKPASS_USER` tell it to answer the user name or the content of the credential file, so it reads the file at each push.
 
 The URL of the repository is `<WARD_MOTTE_URL>/git/<prefix>/<path>.git`, for the repository text `<prefix>:<path>`. For the calls to the control plane of motte (`/v1/events`, `/v1/subscriptions`) ward signs an `operator` grant with a life of 60 seconds. For `GET /v1/vcs/refs` it uses a `read` grant.
 
@@ -284,7 +297,7 @@ A ref is `synced` when it is not dirty, `pending` when it is dirty with no failu
 
 ### Tests
 
-Contract tests start ward against a real motte (the `testserver` package of motte, which does not run the delivery worker) and a bare git repository that `git http-backend` serves over HTTP as the remote. A test reads the ref events from `GET /v1/events` and delivers them to the receiver with a real signature, as motte would, and it can drop an event to make a gap. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock: a test that checks the backoff replaces the clock and moves it, and the other tests wait for the report of a finished unit of work, never for time.
+The GitHub App contract tests use a fake token endpoint that checks the signature of the JWT with the public key and the claims, and a remote that accepts only the token that the endpoint issued last as the HTTP Basic password. They cover a push with a token, the cache across pushes, a refresh after the cached token nears its expiry, and a 401 from the endpoint. Contract tests start ward against a real motte (the `testserver` package of motte, which does not run the delivery worker) and a bare git repository that `git http-backend` serves over HTTP as the remote. A test reads the ref events from `GET /v1/events` and delivers them to the receiver with a real signature, as motte would, and it can drop an event to make a gap. They cover: a push, a force push, a delete, a ref that no pattern matches, a repeated delivery, a delivery with a bad signature, a delivery with a gap in its partition, a catch-up after downtime, a Reset after a 410, a push that the lease refuses because the remote moved, and a remote that rejects a ref. Waits use the injected clock: a test that checks the backoff replaces the clock and moves it, and the other tests wait for the report of a finished unit of work, never for time.
 
 ## Planned work
 

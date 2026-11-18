@@ -21,13 +21,14 @@ var nameRE = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
 // Entry is one mirror of the configuration.
 type Entry struct {
-	Name           string   `json:"name"`
-	Repo           string   `json:"repo"`
-	Remote         string   `json:"remote"`
-	Refs           []string `json:"refs"`
-	Username       string   `json:"username"`
-	CredentialFile string   `json:"credential_file"`
-	PruneUnknown   bool     `json:"prune_unknown"`
+	Name           string     `json:"name"`
+	Repo           string     `json:"repo"`
+	Remote         string     `json:"remote"`
+	Refs           []string   `json:"refs"`
+	Username       string     `json:"username"`
+	CredentialFile string     `json:"credential_file,omitempty"`
+	GitHubApp      *GitHubApp `json:"github_app,omitempty"`
+	PruneUnknown   bool       `json:"prune_unknown"`
 }
 
 // ParseEntries decodes and checks the WARD_MIRRORS list. It rejects an unknown field.
@@ -48,6 +49,15 @@ func ParseEntries(raw []byte) ([]Entry, error) {
 			return nil, fmt.Errorf("mirror %q: name repeats", e.Name)
 		}
 		seen[e.Name] = true
+		if e.GitHubApp != nil {
+			abs, err := filepath.Abs(e.GitHubApp.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("mirror %q: github_app.key_file: %w", e.Name, err)
+			}
+			e.GitHubApp.KeyFile = abs
+			e.Username = appUsername
+			continue
+		}
 		abs, err := filepath.Abs(e.CredentialFile)
 		if err != nil {
 			return nil, fmt.Errorf("mirror %q: credential_file: %w", e.Name, err)
@@ -79,13 +89,30 @@ func (e Entry) validate() error {
 			return fmt.Errorf("invalid ref pattern %q", p)
 		}
 	}
+	if e.GitHubApp != nil {
+		return e.validateApp()
+	}
 	if e.CredentialFile == "" {
-		return errors.New("credential_file is required")
+		return errors.New("credential_file or github_app is required")
 	}
 	if f, err := os.Open(e.CredentialFile); err != nil {
 		return errors.New("credential_file is unreadable")
 	} else {
 		_ = f.Close()
+	}
+	return nil
+}
+
+func (e Entry) validateApp() error {
+	a := e.GitHubApp
+	switch {
+	case e.CredentialFile != "" || e.Username != "":
+		return errors.New("github_app excludes credential_file and username")
+	case a.AppID <= 0 || a.InstallationID <= 0:
+		return errors.New("github_app needs app_id and installation_id")
+	}
+	if _, err := readAppKey(a.KeyFile); err != nil {
+		return fmt.Errorf("github_app.key_file: %w", err)
 	}
 	return nil
 }

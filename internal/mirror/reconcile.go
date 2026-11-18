@@ -8,7 +8,12 @@ func (e *Engine) reconcile(ctx context.Context, en Entry) error {
 	if err != nil {
 		return err
 	}
-	remote, err := e.git.lsRemote(ctx, en.Remote, remoteCreds(en))
+	creds, release, err := e.remoteCreds(ctx, en)
+	if err != nil {
+		return err
+	}
+	remote, err := e.git.lsRemote(ctx, en.Remote, creds)
+	release()
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -58,6 +59,12 @@ func Load(getenv func(string) string) (Config, error) {
 		return c, fmt.Errorf("WARD_MOTTE_KEY_FILE: %w", err)
 	}
 	c.Mirror.Motte = mirror.MotteConfig{URL: getenv("WARD_MOTTE_URL"), Kid: getenv("WARD_MOTTE_KID"), Key: key}
+	if v := getenv("WARD_GITHUB_API_URL"); v != "" {
+		if u, err := url.Parse(v); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return c, errors.New("WARD_GITHUB_API_URL must be an http or https URL")
+		}
+		c.Mirror.GitHubAPI = v
+	}
 	if c.TrustedKeys, err = parseTrustedKeys(getenv("WARD_TRUSTED_KEYS")); err != nil {
 		return c, fmt.Errorf("WARD_TRUSTED_KEYS: %w", err)
 	}
