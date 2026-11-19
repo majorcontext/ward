@@ -109,7 +109,7 @@ func (s *Service) refusal(err error) outcome {
 		return outcome{kind: failed, err: &Error{Code: CodeInvalid, Message: "the branch cannot land on the ref"}}
 	case errors.Is(err, client.ErrLandStale):
 		return outcome{kind: retry, retryCode: CodeStale}
-	case errors.Is(err, client.ErrLandTimeout):
+	case errors.Is(err, client.ErrLandTimeout), errors.Is(err, context.DeadlineExceeded):
 		return outcome{kind: retry, retryCode: CodeTimeout}
 	case errors.Is(err, check.ErrNoRunner):
 		return outcome{kind: failed, err: &Error{Code: CodeInvalid, Message: "the ref has required checks and the repository has no runner"}}

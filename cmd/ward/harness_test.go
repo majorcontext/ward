@@ -184,6 +184,9 @@ type harness struct {
 	// limitPushes makes the proxy answer 503 to a push of git once pushesLeft pushes passed.
 	// holdLand makes the proxy answer no land of main: it forwards the land, and keeps the reply until the caller leaves.
 	holdLand atomic.Bool
+	// slowLeft object reads of motte wait slowFor in the proxy. A negative slowFor waits until the caller leaves.
+	slowLeft atomic.Int64
+	slowFor  atomic.Int64
 	// logHook sees each log line of ward.
 	logHook     atomic.Pointer[func(string)]
 	landRecord  chan struct{}
@@ -351,6 +354,8 @@ type wardOpts struct {
 	runner *fakeRunner
 	// noMirror starts ward with no mirror, and so with no remote work and no wait for a reconcile.
 	noMirror bool
+	// readBudget sets the time limit of a read of motte by a land.
+	readBudget time.Duration
 }
 
 type wardProc struct {
@@ -424,6 +429,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 			c.Mirror.Mirrors[0].Remote = h.remote.URL
 		}
 		c.Mirror.Askpass = askpassBin
+		c.Land.ReadBudget = o.readBudget
 	}
 	ctx, cancel := context.WithCancel(h.t.Context())
 	done := make(chan error, 1)
@@ -699,6 +705,18 @@ func (h *harness) proxy() *httptest.Server {
 		if g := h.motteGate.Load(); g != nil && r.URL.Path == "/v1/subscriptions" {
 			g.entered <- struct{}{}
 			<-g.release
+		}
+		if strings.Contains(r.URL.Path, "/vcs/objects/") && h.slowLeft.Add(-1) >= 0 {
+			d := time.Duration(h.slowFor.Load())
+			if d < 0 {
+				<-r.Context().Done()
+				return
+			}
+			select {
+			case <-time.After(d): //lint:allow wallclock a delay in a proxy that the client budget measures on the wall clock
+			case <-r.Context().Done():
+				return
+			}
 		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/lands") {
 			body, _ := io.ReadAll(r.Body)

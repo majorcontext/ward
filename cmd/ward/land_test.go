@@ -221,3 +221,33 @@ func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
 		t.Fatalf("land calls = %q: the repeat must carry the same id and values", h.landBodies)
 	}
 }
+
+// coldLand sets up a land that needs the merge base walk, and delays the first object reads of motte.
+func (h *harness) coldLand(budget time.Duration, reads int64, delay time.Duration) (*wardProc, landState) {
+	h.t.Helper()
+	p := h.startWard(wardOpts{noMirror: true, proxied: true, readBudget: budget})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.branchFrom(base, "main", "b.txt", "b\n")
+	h.protectMain()
+	h.slowFor.Store(int64(delay))
+	h.slowLeft.Store(reads)
+	return p, h.postLand(p, "main", "feature/x", nil)
+}
+
+func TestLandSucceedsWhenOneReadOfMotteIsSlowButWithinItsBudget(t *testing.T) {
+	h := newLandHarness(t)
+	p, l := h.coldLand(time.Second, 1, 300*time.Millisecond)
+	if got := h.awaitLand(p, l.ID, "landed"); got.Error != nil {
+		t.Fatalf("land = %+v", got)
+	}
+}
+
+func TestLandFailsWithLandTimeoutWhenMotteReadsNeverEndInTime(t *testing.T) {
+	h := newLandHarness(t)
+	p, l := h.coldLand(40*time.Millisecond, 1000, -1)
+	got := h.awaitLand(p, l.ID, "failed")
+	if got.Error == nil || got.Error.Code != "land_timeout" {
+		t.Fatalf("land = %+v, want the error land_timeout", got)
+	}
+}

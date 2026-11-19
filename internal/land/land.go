@@ -3,6 +3,7 @@ package land
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -25,6 +26,9 @@ const (
 	maxWalk   = 10000
 	// MaxWait is the longest wait of a read of a land.
 	MaxWait = 60 * time.Second
+	// DefaultReadBudget is the time limit of one read of motte. A replica that opens its packs on first use needs more than
+	// the 2 s default of the client. The limit stays below the 35 s that the client gives a land call.
+	DefaultReadBudget = 10 * time.Second
 )
 
 // ErrNoMergeBase means that the first-parent chain of the branch never meets the first-parent chain of the target ref.
@@ -35,6 +39,8 @@ type Config struct {
 	URL string
 	Kid string
 	Key ed25519.PrivateKey
+	// ReadBudget is the time limit of one read of motte. Zero means DefaultReadBudget.
+	ReadBudget time.Duration
 }
 
 // Request names the branch to land and where.
@@ -225,10 +231,15 @@ func (s *Service) retireNow(k Key) {
 	s.mu.Unlock()
 }
 
+// client returns a client of motte. Only the read client sets a budget, because a budget also replaces the land limit.
 func (s *Service) client(scope grant.Scope, repo string) *client.Client {
+	var opts []client.Option
+	if scope == grant.ScopeRead {
+		opts = append(opts, client.WithBudget(cmp.Or(s.cfg.ReadBudget, DefaultReadBudget)))
+	}
 	return client.New(s.cfg.URL, func(context.Context) (string, error) {
 		return grant.Signer{Kid: s.cfg.Kid, Key: s.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Subject: "ward", Exp: s.clock.Now().Add(grantLife).Unix()})
-	})
+	}, opts...)
 }
 
 func firstParent(ctx context.Context, c *client.Client, sha string) (string, error) {
