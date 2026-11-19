@@ -21,12 +21,15 @@ jobs:
       - run: go vet ./...
       - run: go run ./internal/lint/cmd/lint ./...
       # testtime prints the test log and fails a test or a package over testdata/test-time-budget.txt.
+      # The first step builds every test binary in parallel. The second runs one package at a time, so the time of a
+      # package is its own cost and not its share of a busy runner.
       # The race runtime sleeps one second at exit by default; every package would carry that idle second.
+      - run: go test -race -count=1 -run '^$' ./...
       - env:
           GORACE: atexit_sleep_ms=0
         run: |
           set -o pipefail
-          go test -race -count=1 -json ./... | go run ./internal/testtime -title Unit -job go
+          go test -race -count=1 -p 1 -json ./... | go run ./internal/testtime -title Unit -job go
       - run: test -z "$(gofmt -l .)"
 
   chart:

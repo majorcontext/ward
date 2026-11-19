@@ -20,7 +20,7 @@ The CI job `leak` runs `internal/leaklint` against the secret `LEAK_DENYLIST`. T
 - Added test lines stay at or below added code lines.
 - No wall-clock waits in tests: `time.Sleep` and `time.After` only inside a `synctest.Test` bubble; otherwise use channels. A wait that no bubble can hold, such as a cross-process wait, carries a `//lint:allow wallclock REASON` comment on its line. The analyzer `internal/lint/wallclock` enforces this.
 - Run Go tests with `-race`.
-- A test is at most 10 s and a package at most 10 s, unless `testdata/test-time-budget.txt` says more. Make a slow test fast; raise a budget only with a stated reason in the same change. `internal/testtime` enforces the budget in CI.
+- A test is at most 10 s and a package at most 10 s, unless `testdata/test-time-budget.txt` says more. Make a slow test fast; raise a budget only with a stated reason in the same change. `internal/testtime` enforces the budget in CI. CI times each package alone (`go test -p 1`), so a package time is its own cost.
 
 ## Comments
 
@@ -46,7 +46,7 @@ Write no comment by default. A comment states why: a constraint, a hazard, or a 
 go build ./...
 go vet ./...
 go run ./internal/lint/cmd/lint ./...
-go test -race -count=1 -json ./... | go run ./internal/testtime
+go test -race -count=1 -p 1 -json ./... | go run ./internal/testtime
 test -z "$(gofmt -l .)"
 LEAK_DENYLIST="$(cat denylist.txt)" go run ./internal/leaklint
 ```
