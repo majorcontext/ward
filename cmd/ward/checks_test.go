@@ -252,6 +252,10 @@ func TestResultRoutePostsOnlyForTheTokenRepositoryAndKeepsTheFirstResult(t *test
 			t.Errorf("%s: status = %d %s, want %d", name, code, body, c.want)
 		}
 	}
+	trailing := `{"request_id":"` + req.RequestID + `","status":"pass"} {}`
+	if code, body := p.do("POST", "/v1/results", h.checkToken(h.repo), []byte(trailing), nil); code != http.StatusBadRequest {
+		t.Errorf("trailing data: status = %d %s", code, body)
+	}
 	if _, got := p.landGet(h.landToken(h.repo), l.ID, ""); got.State != "checking" {
 		t.Fatalf("a refused result changed the land: %+v", got)
 	}

@@ -26,7 +26,7 @@ func (s *Server) postResult(w http.ResponseWriter, r *http.Request) {
 	var p check.Posted
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
-	if err != nil || dec.Decode(&p) != nil || p.RequestID == "" {
+	if err != nil || dec.Decode(&p) != nil || dec.More() || p.RequestID == "" {
 		writeError(w, codeInvalidBody, "the body needs request_id, status, summary and log_url")
 		return
 	}
