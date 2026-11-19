@@ -29,6 +29,8 @@ type outcome struct {
 	kind      kind
 	err       *Error
 	retryCode string
+	// keepCall makes the retry repeat the stored land call, because motte may have done it.
+	keepCall  bool
 	storeErr  error
 	landed    api.LandResponse
 	branchGen int64
@@ -46,7 +48,9 @@ func (s *Service) run(l Land) error {
 				out = outcome{kind: failed, err: &Error{Code: out.retryCode, Message: "the ref kept moving or motte kept timing out"}}
 			} else {
 				l.Retries++
-				l.Call = nil
+				if !out.keepCall {
+					l.Call = nil
+				}
 				continue
 			}
 		}
@@ -226,6 +230,9 @@ func (s *Service) land(ctx context.Context, merger *client.Client, l *Land, base
 func (s *Service) send(ctx context.Context, merger *client.Client, l *Land) outcome {
 	c := l.Call
 	res, err := merger.Land(ctx, l.Repo, api.LandRequest{ID: fmt.Sprintf("%s-%d", l.ID, l.Attempt), Ref: l.Ref, Base: c.Base, Head: c.Head, ExpectTree: c.Tree})
+	if errors.Is(err, context.DeadlineExceeded) && s.ctx.Err() == nil {
+		return outcome{kind: retry, retryCode: CodeTimeout, keepCall: true}
+	}
 	if err != nil {
 		return s.refusal(err)
 	}
