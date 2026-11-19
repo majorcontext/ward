@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,42 +13,37 @@ import (
 )
 
 // fillRemote gives the remote main with n commits, a branch and an annotated tag, and returns the tip of main.
+// The committer time of the commits grows with their number, so the seed order of the refs is fixed.
 func (h *harness) fillRemote(n, size int) string {
 	h.t.Helper()
-	src := h.t.TempDir()
-	gitIn(h.t, src, "init", "-q", "-b", "main")
+	files := map[string]string{}
+	var tip string
 	for i := range n {
 		name := fmt.Sprintf("f%d.txt", i)
-		content := name
+		files[name] = name
 		if size > 0 {
-			content = name + strings.Repeat("0", size)
+			files[name] += strings.Repeat("0", size)
 		}
-		if err := os.WriteFile(filepath.Join(src, name), []byte(content), 0o644); err != nil {
+		objs := commitObjs(files, tip, name, 1700000000+int64(i)*60)
+		tip = objs[len(objs)-1].id
+		h.fillObjects(objs)
+	}
+	tag := newObj("tag", fmt.Appendf(nil, "object %s\ntype commit\ntag v1\ntagger a <a@example.com> 1700000000 +0000\n\nrelease\n", tip))
+	files["x.txt"] = "x"
+	objs := commitObjs(files, tip, "x", 1700000000+int64(n)*60)
+	h.fillObjects(append(objs, tag))
+	for ref, id := range map[string]string{"refs/heads/main": tip, "refs/heads/feature/x": objs[len(objs)-1].id, "refs/tags/v1": tag.id} {
+		if err := writeRef(h.remote.dir, ref, id); err != nil {
 			h.t.Fatal(err)
 		}
-		gitIn(h.t, src, "add", name)
-		h.commitAt(src, i, name)
 	}
-	gitIn(h.t, src, "tag", "-a", "-m", "release", "v1")
-	gitIn(h.t, src, "checkout", "-q", "-b", "feature/x")
-	if err := os.WriteFile(filepath.Join(src, "x.txt"), []byte("x"), 0o644); err != nil {
-		h.t.Fatal(err)
-	}
-	gitIn(h.t, src, "add", "x.txt")
-	h.commitAt(src, n, "x")
-	gitIn(h.t, src, "push", "-q", h.remote.dir, "main", "feature/x", "refs/tags/v1")
-	return h.remote.tip("refs/heads/main")
+	return tip
 }
 
-// commitAt commits with a committer time that grows with i, so the seed order of the refs is fixed.
-func (h *harness) commitAt(dir string, i int, msg string) {
+func (h *harness) fillObjects(objs []gitObj) {
 	h.t.Helper()
-	cmd := exec.Command("git", "commit", "-q", "-m", msg)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "HOME="+dir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=a", "GIT_AUTHOR_EMAIL=a@example.com",
-		"GIT_COMMITTER_NAME=a", "GIT_COMMITTER_EMAIL=a@example.com", fmt.Sprintf("GIT_COMMITTER_DATE=%d +0000", 1700000000+i*60))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		h.t.Fatalf("commit: %v\n%s", err, out)
+	if err := writeLoose(h.remote.dir, objs); err != nil {
+		h.t.Fatal(err)
 	}
 }
 
@@ -101,7 +95,7 @@ func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 	h.skip()
 	h.git("fetch", "-q", "origin", "main")
 	h.git("checkout", "-q", "-B", "w", "FETCH_HEAD")
-	c := h.commit("new.txt", "n")
+	c := h.gitCommit("new.txt", "n")
 	h.push("feature/y", c, false)
 	h.relay(p)
 	h.waitTip("feature/y", c)
@@ -260,7 +254,7 @@ func TestSeedAndMirrorIgnoreEveryRefThatIsNoBranchOrTag(t *testing.T) {
 func TestStartDeletesOnlyTheNonMirrorableRefsThatAnEarlierSeedWrote(t *testing.T) {
 	h := newHarness(t)
 	h.skip()
-	c := h.commit("a.txt", "1")
+	c := h.gitCommit("a.txt", "1")
 	h.git("push", "-q", "origin", c+":refs/pull/1/head", c+":refs/pull/2/head")
 	store, err := mirrorsqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
 	if err != nil {

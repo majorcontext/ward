@@ -16,11 +16,10 @@ import (
 	"github.com/majorcontext/ward/internal/token"
 )
 
-// branchFrom commits file on top of base in the working clone and pushes it as ref.
+// branchFrom commits file on top of base and pushes it as ref.
 func (h *harness) branchFrom(base, ref, file, content string) string {
 	h.t.Helper()
-	h.git("reset", "-q", "--hard", base)
-	c := h.commit(file, content)
+	c := h.commitOn(base, h.with(base, file, content), "edit "+file)
 	h.push(ref, c, false)
 	return c
 }
@@ -28,9 +27,7 @@ func (h *harness) branchFrom(base, ref, file, content string) string {
 // seedMain adds a.txt on top of the main that motte made with the repository and returns the new main.
 func (h *harness) seedMain() string {
 	h.t.Helper()
-	h.git("fetch", "-q", "origin", "main")
-	h.git("reset", "-q", "--hard", "FETCH_HEAD")
-	base := h.commit("a.txt", "base\n")
+	base := h.commitOn(h.mainTip(), map[string]string{"a.txt": "base\n"}, "edit a.txt")
 	h.push("main", base, false)
 	return base
 }
@@ -61,6 +58,7 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 	feature := h.branchFrom(base, "feature/x", "c.txt", "from the branch\n")
 	h.branchFrom(base, "main", "b.txt", "from main\n")
 	h.protectMain()
+	h.git("fetch", "-q", "origin", "feature/x")
 	if gitErr(h.work, "push", "-q", "origin", feature+":refs/heads/main") == nil {
 		t.Fatal("a write grant moved the protected main")
 	}

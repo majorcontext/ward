@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -8,18 +9,36 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 
+	metasqlite "github.com/majorcontext/motte/meta/sqlite"
 	"github.com/majorcontext/motte/testserver"
 )
 
 // askpassBin answers git like the ward binary does, but starts at once: compiling ward for a test costs more than the tests.
 var askpassBin string
 
-// bareTemplate is a bare repository that each remote copies, and gitExecPath is the exec path of git. Both are made once,
-// because each test would otherwise start git for them.
-var bareTemplate, workTemplate, gitExecPath string
+// bareTemplate is a bare repository that each remote copies, and metaTemplate is a migrated database of motte that each
+// motte copies. Both are made once, because each test would otherwise start git or run the migrations for them.
+var bareTemplate, workTemplate, metaTemplate string
+
+// seededTB gives the first directory that testserver asks for the migrated database of motte.
+type seededTB struct {
+	testing.TB
+	seeded bool
+}
+
+func (s *seededTB) TempDir() string {
+	d := s.TB.TempDir()
+	if !s.seeded {
+		s.seeded = true
+		b, err := os.ReadFile(metaTemplate)
+		if err != nil || os.WriteFile(filepath.Join(d, "meta.db"), b, 0o644) != nil {
+			s.Fatal("copy the database template", err)
+		}
+	}
+	return d
+}
 
 // sharedMotte is the motte of the tests that need no mirror.
 var sharedMotte *testserver.Server
@@ -47,7 +66,7 @@ func (mainTB) Fatal(args ...any) { panic(fmt.Sprint(args...)) }
 const askpassScript = `#!/bin/sh
 case "$1" in
 Username*) echo "$WARD_ASKPASS_USER" ;;
-*) cat "$WARD_ASKPASS_FILE" ;;
+*) IFS= read -r secret <"$WARD_ASKPASS_FILE"; echo "$secret" ;;
 esac
 `
 
@@ -72,12 +91,12 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	path, err := exec.Command("git", "--exec-path").Output()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	metaTemplate = filepath.Join(dir, "meta.tmpl")
+	db, err := metasqlite.Open(context.Background(), metaTemplate)
+	if err != nil || db.Close() != nil {
+		fmt.Fprintln(os.Stderr, "migrate the database template", err)
 		os.Exit(1)
 	}
-	gitExecPath = strings.TrimSpace(string(path))
 	sharedMotte = testserver.StartLocal(mainTB{dir: dir})
 	askpassBin = filepath.Join(dir, "askpass")
 	if err := os.WriteFile(askpassBin, []byte(askpassScript), 0o755); err != nil {

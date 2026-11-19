@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/cgi"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
@@ -98,8 +97,6 @@ func newRemote(t *testing.T) *remote {
 	if err := os.CopyFS(r.dir, os.DirFS(bareTemplate)); err != nil {
 		t.Fatal(err)
 	}
-	backend := &cgi.Handler{Path: filepath.Join(gitExecPath, "git-http-backend"), InheritEnv: []string{"PATH"},
-		Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}}
 	r.pass.set(remotePass)
 	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		u, p, ok := req.BasicAuth()
@@ -112,14 +109,22 @@ func newRemote(t *testing.T) *remote {
 			g.entered <- struct{}{}
 			<-g.release
 		}
-		backend.ServeHTTP(w, req)
+		r.serveGit(w, req)
 	}))
 	t.Cleanup(r.srv.Close)
 	r.URL = r.srv.URL + "/r.git"
 	return r
 }
 
+// tip reads the loose ref. It spawns git only when the remote packed its refs, which a test remote never does by itself.
 func (r *remote) tip(ref string) string {
+	if sha, err := os.ReadFile(filepath.Join(r.dir, ref)); err == nil {
+		if s := strings.TrimSpace(string(sha)); !strings.HasPrefix(s, "ref:") {
+			return s
+		}
+	} else if _, perr := os.Stat(filepath.Join(r.dir, "packed-refs")); perr != nil {
+		return ""
+	}
 	cmd := exec.Command("git", "--git-dir", r.dir, "rev-parse", "--verify", "-q", ref)
 	out, _ := cmd.Output()
 	return strings.TrimSpace(string(out))
@@ -170,6 +175,7 @@ type harness struct {
 	cursor   string
 	callerSK ed25519.PrivateKey
 	callerPK ed25519.PublicKey
+	hist     history
 
 	started    bool
 	ln         *net.TCPListener
@@ -190,7 +196,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return buildHarness(t, testserver.StartLocal(t), newRemote(t))
+	return buildHarness(t, testserver.StartLocal(&seededTB{TB: t}), newRemote(t))
 }
 
 // newLandHarness is a harness for a test that needs no mirror. It shares the one motte of the package and makes no remote.
@@ -258,8 +264,8 @@ func (h *harness) waitFor(what string, cond func() bool) {
 
 func (h *harness) git(args ...string) string { return gitIn(h.t, h.work, args...) }
 
-// commit adds a commit to the working clone and returns it.
-func (h *harness) commit(file, content string) string {
+// gitCommit adds a commit to the working clone and returns it.
+func (h *harness) gitCommit(file, content string) string {
 	h.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(h.work, file)), 0o755); err != nil {
 		h.t.Fatal(err)
@@ -288,6 +294,10 @@ func (h *harness) head() string {
 // push writes a motte ref: force sets the leading plus of the refspec. An empty commit deletes.
 func (h *harness) push(ref, commit string, force bool) {
 	h.t.Helper()
+	if _, ok := h.hist.files[commit]; ok {
+		h.swap(ref, commit)
+		return
+	}
 	plus := ""
 	if force {
 		plus = "+"
@@ -295,7 +305,17 @@ func (h *harness) push(ref, commit string, force bool) {
 	h.git("push", "-q", "origin", plus+commit+":refs/heads/"+ref)
 }
 
-func (h *harness) deleteRef(ref string) { h.git("push", "-q", "origin", ":refs/heads/"+ref) }
+func (h *harness) deleteRef(ref string) {
+	h.t.Helper()
+	mc := h.motte.Client(h.motte.MergeGrant(h.t, h.repo))
+	cur, err := mc.Ref(h.t.Context(), ref)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := mc.DeleteRef(h.t.Context(), ref, cur.Generation); err != nil {
+		h.t.Fatal(err)
+	}
+}
 
 func (h *harness) readClient() *client.Client { return h.motte.Client(h.motte.ReadGrant(h.t, h.repo)) }
 

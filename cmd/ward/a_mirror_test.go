@@ -64,8 +64,7 @@ func TestMirrorFollowsRefsThroughTheirLife(t *testing.T) {
 	h.relay(p)
 	h.waitTip("feature/a", c2)
 
-	h.git("commit", "--amend", "-q", "-m", "rewritten")
-	c3 := h.git("rev-parse", "HEAD")
+	c3 := h.amend("rewritten")
 	h.push("feature/a", c3, true)
 	h.relay(p)
 	h.waitTip("feature/a", c3)
