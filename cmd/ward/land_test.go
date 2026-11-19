@@ -16,11 +16,10 @@ import (
 	"github.com/majorcontext/ward/internal/token"
 )
 
-// branchFrom commits file on top of base in the working clone and pushes it as ref.
+// branchFrom commits file on top of base and pushes it as ref.
 func (h *harness) branchFrom(base, ref, file, content string) string {
 	h.t.Helper()
-	h.git("reset", "-q", "--hard", base)
-	c := h.commit(file, content)
+	c := h.commitOn(base, h.with(base, file, content), "edit "+file)
 	h.push(ref, c, false)
 	return c
 }
@@ -28,9 +27,7 @@ func (h *harness) branchFrom(base, ref, file, content string) string {
 // seedMain adds a.txt on top of the main that motte made with the repository and returns the new main.
 func (h *harness) seedMain() string {
 	h.t.Helper()
-	h.git("fetch", "-q", "origin", "main")
-	h.git("reset", "-q", "--hard", "FETCH_HEAD")
-	base := h.commit("a.txt", "base\n")
+	base := h.commitOn(h.mainTip(), map[string]string{"a.txt": "base\n"}, "edit a.txt")
 	h.push("main", base, false)
 	return base
 }
@@ -55,17 +52,18 @@ func (h *harness) landBody(branch string, extra map[string]any) []byte {
 }
 
 func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T) {
-	h := newHarness(t)
-	p := h.startWard(wardOpts{})
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	feature := h.branchFrom(base, "feature/x", "c.txt", "from the branch\n")
 	h.branchFrom(base, "main", "b.txt", "from main\n")
 	h.protectMain()
+	h.git("fetch", "-q", "origin", "feature/x")
 	if gitErr(h.work, "push", "-q", "origin", feature+":refs/heads/main") == nil {
 		t.Fatal("a write grant moved the protected main")
 	}
 
-	for name, tok := range map[string]string{"read": h.token(token.ScopeRead, h.repo), "land for another repo": h.landToken("native:other"), "none": ""} {
+	for name, tok := range map[string]string{"read": h.token(token.ScopeRead, h.repo), "check": h.checkToken(h.repo), "land for another repo": h.landToken("native:other"), "none": ""} {
 		want := http.StatusForbidden
 		if tok == "" {
 			want = http.StatusUnauthorized
@@ -74,24 +72,21 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 			t.Fatalf("%s: status = %d %s, want %d", name, code, body, want)
 		}
 	}
+	if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/x", map[string]any{"extra": 1}), nil); code != http.StatusBadRequest {
+		t.Fatalf("unknown field: status = %d %s", code, body)
+	}
 	if main, _ := h.readClient().Ref(t.Context(), "main"); main.Commit == feature {
 		t.Fatal("a refused token landed the branch")
 	}
 
-	code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/x", map[string]any{"delete_branch": true}), nil)
-	if code != http.StatusOK {
-		t.Fatalf("land = %d %s", code, body)
-	}
-	var got landAnswer
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
+	queued := h.postLand(p, "", "feature/x", map[string]any{"delete_branch": true})
+	got := h.awaitLand(p, queued.ID, "landed")
 	main, err := h.readClient().Ref(t.Context(), "main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Ref != "main" || got.Tip != main.Commit || got.Generation != main.Generation || got.FastForward ||
-		len(got.Commits) != 1 || got.Commits[0].Old != feature || got.Commits[0].New != got.Tip || !got.BranchDeleted {
+	if got.Ref != "main" || got.Tip != main.Commit || got.Generation != main.Generation || got.FastForward || len(got.Checks) != 0 ||
+		len(got.Commits) != 1 || got.Commits[0].Old != feature || got.Commits[0].New != got.Tip || !got.BranchDeleted || got.Error != nil {
 		t.Fatalf("answer = %+v, main = %+v", got, main)
 	}
 	h.git("fetch", "-q", "origin", "main")
@@ -103,11 +98,59 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 	if _, err := h.readClient().Ref(t.Context(), "feature/x"); !errors.Is(err, client.ErrNotFound) {
 		t.Fatalf("branch after delete_branch: %v", err)
 	}
+	if _, err := h.readClient().Ref(t.Context(), "refs/ward/candidates/"+queued.ID); !errors.Is(err, client.ErrNotFound) {
+		t.Fatalf("candidate ref after the land: %v", err)
+	}
+}
+
+func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	l := h.postLand(p, "", "feature/x", nil)
+	for name, c := range map[string]struct {
+		tok  string
+		id   string
+		want int
+	}{
+		"no token":      {"", l.ID, http.StatusUnauthorized},
+		"read token":    {h.token(token.ScopeRead, h.repo), l.ID, http.StatusForbidden},
+		"check token":   {h.checkToken(h.repo), l.ID, http.StatusForbidden},
+		"other repo":    {h.landToken("native:other"), l.ID, http.StatusForbidden},
+		"unknown id":    {h.landToken(h.repo), "nope", http.StatusNotFound},
+		"wait too long": {h.landToken(h.repo), l.ID + "?wait=61", http.StatusBadRequest},
+	} {
+		if code, _ := p.landGet(c.tok, c.id, ""); code != c.want {
+			t.Errorf("%s: status = %d, want %d", name, code, c.want)
+		}
+	}
+}
+
+func TestLandReportsAConflictWithItsPathsAndLeavesTheRefAlone(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/bad", "a.txt", "branch edit\n")
+	moved := h.branchFrom(base, "main", "a.txt", "main edit\n")
+	h.protectMain()
+	l := h.postLand(p, "", "feature/bad", nil)
+	failed := h.awaitLand(p, l.ID, "failed")
+	paths, _ := failed.Error.Details["paths"].([]any)
+	if failed.Error.Code != "land_conflict" || len(paths) != 1 || paths[0] != "a.txt" {
+		t.Fatalf("error = %+v", failed.Error)
+	}
+	if h.mainTip() != moved {
+		t.Fatal("a conflict moved main")
+	}
+	if _, err := h.readClient().Ref(t.Context(), "refs/ward/candidates/"+l.ID); !errors.Is(err, client.ErrNotFound) {
+		t.Fatalf("candidate ref after a conflict: %v", err)
+	}
 }
 
 func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
-	h := newHarness(t)
-	h.startWard(wardOpts{})
+	h := newLandHarness(t)
+	h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	clean := h.branchFrom(base, "feature/clean", "c.txt", "c\n")
 	bad := h.branchFrom(base, "feature/bad", "a.txt", "branch edit\n")
@@ -132,7 +175,7 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 	}
 
 	code, out, errOut = run(h.repo, "feature/bad")
-	if code != 1 || out != "" || !strings.Contains(errOut, "\na.txt\n") {
+	if code != 1 || out != "" || !strings.Contains(errOut, "land_conflict") || !strings.Contains(errOut, "\na.txt\n") {
 		t.Fatalf("conflicting land: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
 	}
 	if after, _ := h.readClient().Ref(t.Context(), "main"); after.Commit != main.Commit {
@@ -142,8 +185,39 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 		t.Fatal("a conflict changed the branch")
 	}
 
+	if code, _, errOut := run("--bogus", h.repo, "feature/bad"); code != 2 {
+		t.Fatalf("usage error: exit %d, %s", code, errOut)
+	}
 	env["WARD_KEY_FILE"] = ""
 	if code, _, errOut := run(h.repo, "feature/bad"); code != 2 || !slices.Contains(strings.Fields(errOut), "WARD_TOKEN,") {
 		t.Fatalf("no credential: exit %d, %s", code, errOut)
+	}
+}
+
+func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true, proxied: true})
+	base := h.seedMain()
+	feature := h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.branchFrom(base, "main", "b.txt", "b\n")
+	h.protectMain()
+	h.holdLand.Store(true)
+	l := h.postLand(p, "main", "feature/x", nil)
+	<-h.landRecord
+	p.stop()
+	if h.mainTip() == base {
+		t.Fatal("motte did not record the land before the restart")
+	}
+	h.holdLand.Store(false)
+
+	p = h.startWard(wardOpts{noMirror: true, proxied: true})
+	done := h.awaitLand(p, l.ID, "landed")
+	if done.Tip != h.mainTip() || len(done.Commits) != 1 || done.Commits[0].Old != feature || done.Commits[0].New != done.Tip {
+		t.Fatalf("land = %+v, main = %s", done, h.mainTip())
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.landBodies) != 2 || h.landBodies[0] != h.landBodies[1] || !strings.Contains(h.landBodies[0], `"id":"`+l.ID+`-1"`) {
+		t.Fatalf("land calls = %q: the repeat must carry the same id and values", h.landBodies)
 	}
 }

@@ -1,7 +1,10 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -16,26 +19,48 @@ func revRange(tip string, not []string) string {
 	return b.String()
 }
 
+// lineCap collects the output of a process and stops it once the output holds more than max lines.
+type lineCap struct {
+	buf    bytes.Buffer
+	lines  int
+	max    int
+	over   bool
+	cancel context.CancelFunc
+}
+
+func (w *lineCap) Write(p []byte) (int, error) {
+	if w.over {
+		return len(p), nil
+	}
+	if w.lines += bytes.Count(p, []byte("\n")); w.lines > w.max {
+		w.over = true
+		w.cancel()
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
+// listObjects lists the objects that in selects. The bool is true when more than max objects match.
+func (g *gitRunner) listObjects(ctx context.Context, clone, in string, max int) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, g.timeout)
+	defer cancel()
+	w := &lineCap{max: max, cancel: cancel}
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--stdin", "--objects")
+	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout = clone, g.env(gitCreds{}), strings.NewReader(in), w
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil && !w.over {
+		return "", false, &gitError{stderr: stderr.String(), err: err, timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+	}
+	return w.buf.String(), w.over, nil
+}
+
 // fitsPush reports whether the objects that tip reaches and no commit of not reaches fit in one push: at most
-// maxObjects objects, maxPacked packed bytes and maxInflated bytes of whole objects. The cheap counts run first.
+// maxObjects objects, maxPacked packed bytes and maxInflated bytes of whole objects. It lists the objects once and
+// reads both sizes of each object in one cat-file process.
 func (g *gitRunner) fitsPush(ctx context.Context, clone, tip string, not []string, maxObjects int, maxPacked, maxInflated int64) (bool, error) {
-	in := revRange(tip, not)
-	out, err := g.runIn(ctx, clone, gitCreds{}, in, "rev-list", "--stdin", "--objects", "--count")
-	if err != nil {
-		return false, err
-	}
-	if n, _ := strconv.Atoi(strings.TrimSpace(out)); n > maxObjects {
-		return false, nil
-	}
-	out, err = g.runIn(ctx, clone, gitCreds{}, in, "rev-list", "--stdin", "--objects", "--disk-usage")
-	if err != nil {
-		return false, err
-	}
-	if size, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64); size > maxPacked {
-		return false, nil
-	}
-	list, err := g.runIn(ctx, clone, gitCreds{}, in, "rev-list", "--stdin", "--objects")
-	if err != nil {
+	list, over, err := g.listObjects(ctx, clone, revRange(tip, not), maxObjects)
+	if err != nil || over {
 		return false, err
 	}
 	var names strings.Builder
@@ -43,16 +68,18 @@ func (g *gitRunner) fitsPush(ctx context.Context, clone, tip string, not []strin
 		sha, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 		names.WriteString(sha + "\n")
 	}
-	sizes, err := g.runIn(ctx, clone, gitCreds{}, names.String(), "cat-file", "--batch-check=%(objectsize)")
+	sizes, err := g.runIn(ctx, clone, gitCreds{}, names.String(), "cat-file", "--batch-check=%(objectsize) %(objectsize:disk)")
 	if err != nil {
 		return false, err
 	}
-	var total int64
+	var inflated, packed int64
 	for line := range strings.Lines(sizes) {
-		n, _ := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
-		total += n
+		whole, disk, _ := strings.Cut(strings.TrimSpace(line), " ")
+		n, _ := strconv.ParseInt(whole, 10, 64)
+		d, _ := strconv.ParseInt(disk, 10, 64)
+		inflated, packed = inflated+n, packed+d
 	}
-	return total <= maxInflated, nil
+	return packed <= maxPacked && inflated <= maxInflated, nil
 }
 
 // firstParents lists the commits of the first-parent history of tip that no commit of not reaches, oldest first.

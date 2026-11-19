@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,26 +18,40 @@ import (
 )
 
 const (
-	landCallLimit = 2 * time.Minute
-	landTokenLife = 5 * time.Minute
+	landTokenLife = time.Hour
+	landWaitSecs  = 60
 	maxLandAnswer = 1 << 20
+	// landReadLimit bounds one read of a land: the wait, and a margin for the answer.
+	landReadLimit = (landWaitSecs + 15) * time.Second
 )
 
 type landAnswer struct {
-	Ref         string `json:"ref"`
-	Generation  int64  `json:"generation"`
+	ID     string `json:"id"`
+	State  string `json:"state"`
+	Ref    string `json:"ref"`
+	Checks []struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	} `json:"checks"`
 	Tip         string `json:"tip"`
+	Generation  int64  `json:"generation"`
 	FastForward bool   `json:"fast_forward"`
 	Commits     []struct {
 		Old string `json:"old"`
 		New string `json:"new"`
 	} `json:"commits"`
-	BranchDeleted bool `json:"branch_deleted"`
-	Error         struct {
-		Code    string         `json:"code"`
-		Message string         `json:"message"`
-		Details map[string]any `json:"details"`
-	} `json:"error"`
+	BranchDeleted bool       `json:"branch_deleted"`
+	Error         *landError `json:"error"`
+}
+
+type landError struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details"`
+}
+
+type landEnvelope struct {
+	Error landError `json:"error"`
 }
 
 // landToken returns WARD_TOKEN, or a land token that it signs for repo with the key file of WARD_KEY_FILE and WARD_KID.
@@ -70,31 +85,74 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		fmt.Fprintln(stderr, "ward land:", err)
 		return 2
 	}
+	c := &landClient{base: strings.TrimRight(getenv("WARD_URL"), "/"), tok: tok}
 	body, _ := json.Marshal(map[string]any{"repo": repo, "ref": *ref, "branch": branch, "delete_branch": *del})
-	ctx, cancel := context.WithTimeout(ctx, landCallLimit)
+	cur, code := c.call(ctx, http.MethodPost, "/v1/lands", body, stderr)
+	if code != 0 {
+		return code
+	}
+	announced := false
+	for {
+		if !announced && cur.State == "checking" {
+			announced = true
+			for _, ck := range cur.Checks {
+				if ck.State != "pass" && ck.State != "flaky" {
+					fmt.Fprintln(stdout, "checking", ck.Name)
+				}
+			}
+		}
+		switch cur.State {
+		case "landed":
+			printLanded(stdout, cur, branch, repo)
+			return 0
+		case "failed":
+			return printLandError(stderr, cur.Error)
+		}
+		path := "/v1/lands/" + cur.ID + "?wait=" + strconv.Itoa(landWaitSecs) + "&state=" + cur.State
+		if cur, code = c.call(ctx, http.MethodGet, path, nil, stderr); code != 0 {
+			return code
+		}
+	}
+}
+
+type landClient struct{ base, tok string }
+
+// call sends one request and decodes the land of the answer. A non-zero code is the exit code of a failure that it has reported.
+func (c *landClient) call(ctx context.Context, method, path string, body []byte, stderr io.Writer) (landAnswer, int) {
+	ctx, cancel := context.WithTimeout(ctx, landReadLimit)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(getenv("WARD_URL"), "/")+"/v1/lands", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintln(stderr, "ward land: WARD_URL is not a URL")
-		return 2
+		return landAnswer{}, 2
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Authorization", "Bearer "+c.tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintln(stderr, "ward land: the request failed")
-		return 1
+		return landAnswer{}, 1
 	}
 	defer resp.Body.Close()
-	var out landAnswer
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxLandAnswer))
-	if json.Unmarshal(raw, &out) != nil {
-		fmt.Fprintf(stderr, "ward land: status %d with no JSON body\n", resp.StatusCode)
-		return 1
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		var env landEnvelope
+		if json.Unmarshal(raw, &env) != nil {
+			fmt.Fprintf(stderr, "ward land: status %d with no JSON body\n", resp.StatusCode)
+			return landAnswer{}, 1
+		}
+		fmt.Fprintf(stderr, "ward land: status %d: %s: %s\n", resp.StatusCode, env.Error.Code, env.Error.Message)
+		return landAnswer{}, 1
 	}
-	if resp.StatusCode != http.StatusOK {
-		return printLandError(stderr, out, repo, *ref, resp.StatusCode)
+	var out landAnswer
+	if json.Unmarshal(raw, &out) != nil || out.ID == "" {
+		fmt.Fprintf(stderr, "ward land: status %d with no land\n", resp.StatusCode)
+		return landAnswer{}, 1
 	}
+	return out, 0
+}
+
+func printLanded(stdout io.Writer, out landAnswer, branch, repo string) {
 	fmt.Fprintf(stdout, "landed %s on %s %s\ntip %s\ngeneration %d\n", branch, repo, out.Ref, out.Tip, out.Generation)
 	if out.FastForward {
 		fmt.Fprintln(stdout, "fast-forward")
@@ -105,18 +163,24 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 	if out.BranchDeleted {
 		fmt.Fprintln(stdout, "branch deleted")
 	}
-	return 0
 }
 
-func printLandError(stderr io.Writer, out landAnswer, repo, ref string, status int) int {
-	if out.Error.Code != "land_conflict" {
-		fmt.Fprintf(stderr, "ward land: status %d: %s: %s\n", status, out.Error.Code, out.Error.Message)
+func printLandError(stderr io.Writer, e *landError) int {
+	if e == nil {
+		fmt.Fprintln(stderr, "ward land: the land failed")
 		return 1
 	}
-	fmt.Fprintf(stderr, "conflict: the branch changes paths that changed on %s of %s since it was built:\n", ref, repo)
-	paths, _ := out.Error.Details["paths"].([]any)
-	for _, p := range paths {
-		fmt.Fprintln(stderr, p)
+	fmt.Fprintf(stderr, "ward land: %s: %s\n", e.Code, e.Message)
+	switch e.Code {
+	case "land_conflict":
+		paths, _ := e.Details["paths"].([]any)
+		for _, p := range paths {
+			fmt.Fprintln(stderr, p)
+		}
+	case "check_failed":
+		for _, k := range []string{"check", "summary", "log_url"} {
+			fmt.Fprintf(stderr, "%s: %v\n", k, e.Details[k])
+		}
 	}
 	return 1
 }

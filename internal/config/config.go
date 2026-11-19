@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
@@ -31,6 +32,7 @@ type Config struct {
 	StateFile   string
 	Mirror      mirror.Config
 	Land        land.Config
+	Runners     []check.Runner
 	TrustedKeys []token.Key
 	OTLP        bool
 }
@@ -74,6 +76,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if raw := getenv("WARD_MIRRORS"); raw != "" {
 		if c.Mirror.Mirrors, err = mirror.ParseEntries([]byte(raw)); err != nil {
 			return c, fmt.Errorf("WARD_MIRRORS: %w", err)
+		}
+	}
+	if raw := getenv("WARD_RUNNERS"); raw != "" {
+		if c.Runners, err = check.ParseRunners([]byte(raw)); err != nil {
+			return c, fmt.Errorf("WARD_RUNNERS: %w", err)
 		}
 	}
 	if err := c.loadMirrorEnv(getenv); err != nil {
@@ -175,7 +182,7 @@ func parseTrustedKeys(raw string) ([]token.Key, error) {
 		}
 		tk := token.Key{Kid: k.Kid, Public: pub}
 		for _, s := range k.Scopes {
-			if s != string(token.ScopeRead) && s != string(token.ScopeOperator) && s != string(token.ScopeLand) {
+			if s != string(token.ScopeRead) && s != string(token.ScopeOperator) && s != string(token.ScopeLand) && s != string(token.ScopeCheck) {
 				return nil, fmt.Errorf("key %q has the unknown scope %q", k.Kid, s)
 			}
 			tk.Scopes = append(tk.Scopes, token.Scope(s))

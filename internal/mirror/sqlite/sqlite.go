@@ -1,4 +1,4 @@
-// Package sqlite is the SQLite state store of the mirror.
+// Package sqlite is the SQLite state store of ward: the mirror, the check results and the lands.
 package sqlite
 
 import (
@@ -58,7 +58,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if _, err := db.ExecContext(ctx, schema+checkSchema+landSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: schema: %w", err)
 	}

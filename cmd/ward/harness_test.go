@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/cgi"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
@@ -33,6 +32,7 @@ import (
 	"github.com/majorcontext/motte/client"
 	"github.com/majorcontext/motte/testserver"
 
+	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
@@ -94,11 +94,9 @@ func newRemote(t *testing.T) *remote {
 	t.Helper()
 	root := t.TempDir()
 	r := &remote{t: t, dir: filepath.Join(root, "r.git"), user: remoteUser}
-	gitIn(t, root, "init", "--bare", "-q", r.dir)
-	gitIn(t, r.dir, "config", "http.receivepack", "true")
-	exec := gitIn(t, root, "--exec-path")
-	backend := &cgi.Handler{Path: filepath.Join(exec, "git-http-backend"), InheritEnv: []string{"PATH"},
-		Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}}
+	if err := os.CopyFS(r.dir, os.DirFS(bareTemplate)); err != nil {
+		t.Fatal(err)
+	}
 	r.pass.set(remotePass)
 	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		u, p, ok := req.BasicAuth()
@@ -111,14 +109,22 @@ func newRemote(t *testing.T) *remote {
 			g.entered <- struct{}{}
 			<-g.release
 		}
-		backend.ServeHTTP(w, req)
+		r.serveGit(w, req)
 	}))
 	t.Cleanup(r.srv.Close)
 	r.URL = r.srv.URL + "/r.git"
 	return r
 }
 
+// tip reads the loose ref. It spawns git only when the remote packed its refs, which a test remote never does by itself.
 func (r *remote) tip(ref string) string {
+	if sha, err := os.ReadFile(filepath.Join(r.dir, ref)); err == nil {
+		if s := strings.TrimSpace(string(sha)); !strings.HasPrefix(s, "ref:") {
+			return s
+		}
+	} else if _, perr := os.Stat(filepath.Join(r.dir, "packed-refs")); perr != nil {
+		return ""
+	}
 	cmd := exec.Command("git", "--git-dir", r.dir, "rev-parse", "--verify", "-q", ref)
 	out, _ := cmd.Output()
 	return strings.TrimSpace(string(out))
@@ -169,12 +175,19 @@ type harness struct {
 	cursor   string
 	callerSK ed25519.PrivateKey
 	callerPK ed25519.PublicKey
+	hist     history
 
 	started    bool
 	ln         *net.TCPListener
 	motteProxy *httptest.Server
 	motteGate  atomic.Pointer[gate]
 	// limitPushes makes the proxy answer 503 to a push of git once pushesLeft pushes passed.
+	// holdLand makes the proxy answer no land of main: it forwards the land, and keeps the reply until the caller leaves.
+	holdLand atomic.Bool
+	// logHook sees each log line of ward.
+	logHook     atomic.Pointer[func(string)]
+	landRecord  chan struct{}
+	landBodies  []string
 	limitPushes atomic.Bool
 	pushesLeft  atomic.Int64
 	mu          sync.Mutex
@@ -183,9 +196,21 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return buildHarness(t, testserver.StartLocal(&seededTB{TB: t}), newRemote(t))
+}
+
+// newLandHarness is a harness for a test that needs no mirror. It shares the one motte of the package and makes no remote.
+// Each test has a repository of its own on that motte, and no such test reads the events of motte or its subscriptions.
+func newLandHarness(t *testing.T) *harness {
+	t.Helper()
+	return buildHarness(t, sharedMotte, nil)
+}
+
+func buildHarness(t *testing.T, motte *testserver.Server, rem *remote) *harness {
+	t.Helper()
 	t.Parallel()
-	h := &harness{t: t, motte: testserver.StartLocal(t), remote: newRemote(t), dataDir: t.TempDir(), files: t.TempDir(),
-		secret: strings.Repeat("h", 32), notes: make(chan string, 4096), counts: map[string]int{}}
+	h := &harness{t: t, motte: motte, remote: rem, dataDir: t.TempDir(), files: t.TempDir(),
+		secret: strings.Repeat("h", 32), notes: make(chan string, 4096), counts: map[string]int{}, landRecord: make(chan struct{}, 4)}
 	h.callerPK, h.callerSK, _ = ed25519.GenerateKey(rand.Reader)
 	path, err := h.motte.Client(h.motte.OperatorGrant(t)).CreateRepo(t.Context(), "widgets", "o1")
 	if err != nil {
@@ -194,8 +219,17 @@ func newHarness(t *testing.T) *harness {
 	h.repoPath, h.repo = path, "native:"+path
 	h.work = t.TempDir()
 	u := strings.Replace(h.motte.URL, "http://", "http://git:"+h.motte.WriteGrant(t, h.repo)+"@", 1) + "/git/native/" + path + ".git"
-	gitIn(t, h.work, "init", "-q")
-	gitIn(t, h.work, "remote", "add", "origin", u)
+	if err := os.CopyFS(h.work, os.DirFS(workTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := os.OpenFile(filepath.Join(h.work, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(cfg, "[remote \"origin\"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n", u)
+	if err != nil || cfg.Close() != nil {
+		t.Fatal("write the remote of the working clone")
+	}
 	return h
 }
 
@@ -230,20 +264,40 @@ func (h *harness) waitFor(what string, cond func() bool) {
 
 func (h *harness) git(args ...string) string { return gitIn(h.t, h.work, args...) }
 
-// commit adds a commit to the working clone and returns it.
-func (h *harness) commit(file, content string) string {
+// gitCommit adds a commit to the working clone and returns it.
+func (h *harness) gitCommit(file, content string) string {
 	h.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(h.work, file)), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(h.work, file), []byte(content), 0o644); err != nil {
 		h.t.Fatal(err)
 	}
 	h.git("add", file)
 	h.git("commit", "-q", "-m", "edit "+file)
+	return h.head()
+}
+
+// head returns the commit of the current branch of the working clone. It reads the loose ref, because git has no
+// reason to pack the refs of a clone that lives for one test, and a spawn of git costs more than the read.
+func (h *harness) head() string {
+	h.t.Helper()
+	ref, err := os.ReadFile(filepath.Join(h.work, ".git", "HEAD"))
+	if name, ok := strings.CutPrefix(strings.TrimSpace(string(ref)), "ref: "); err == nil && ok {
+		if sha, err := os.ReadFile(filepath.Join(h.work, ".git", name)); err == nil {
+			return strings.TrimSpace(string(sha))
+		}
+	}
 	return h.git("rev-parse", "HEAD")
 }
 
 // push writes a motte ref: force sets the leading plus of the refspec. An empty commit deletes.
 func (h *harness) push(ref, commit string, force bool) {
 	h.t.Helper()
+	if _, ok := h.hist.files[commit]; ok {
+		h.swap(ref, commit)
+		return
+	}
 	plus := ""
 	if force {
 		plus = "+"
@@ -251,7 +305,17 @@ func (h *harness) push(ref, commit string, force bool) {
 	h.git("push", "-q", "origin", plus+commit+":refs/heads/"+ref)
 }
 
-func (h *harness) deleteRef(ref string) { h.git("push", "-q", "origin", ":refs/heads/"+ref) }
+func (h *harness) deleteRef(ref string) {
+	h.t.Helper()
+	mc := h.motte.Client(h.motte.MergeGrant(h.t, h.repo))
+	cur, err := mc.Ref(h.t.Context(), ref)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := mc.DeleteRef(h.t.Context(), ref, cur.Generation); err != nil {
+		h.t.Fatal(err)
+	}
+}
 
 func (h *harness) readClient() *client.Client { return h.motte.Client(h.motte.ReadGrant(h.t, h.repo)) }
 
@@ -283,6 +347,10 @@ type wardOpts struct {
 	seedObjects string
 	// seedInflated lowers the inflated byte limit of one seed push.
 	seedInflated string
+	// runner is the runner of the repository of the harness.
+	runner *fakeRunner
+	// noMirror starts ward with no mirror, and so with no remote work and no wait for a reconcile.
+	noMirror bool
 }
 
 type wardProc struct {
@@ -307,7 +375,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		o.refs = []string{"feature/*"}
 	}
 	seed := base64.StdEncoding.EncodeToString(h.motte.Operator.Key.Seed())
-	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land"}}})
+	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land", "check"}}})
 	dataDir, credFile := h.dataDir, h.credFile()
 	if o.relative {
 		dir, err := os.MkdirTemp(".", "rel-")
@@ -330,6 +398,14 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		githubAPI = o.app.srv.URL
 	}
 	entries, _ := json.Marshal([]mirror.Entry{entry})
+	if o.noMirror {
+		entries = nil
+	}
+	runners := ""
+	if o.runner != nil {
+		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, URL: o.runner.srv.URL, SecretFile: h.writeFile("runner.secret", runnerSecret+"\n"), Env: runnerEnv}})
+		runners = string(raw)
+	}
 	motteURL := h.motte.URL
 	if o.proxied {
 		motteURL = h.proxy().URL
@@ -340,11 +416,13 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_DATA_DIR": dataDir, "WARD_MOTTE_URL": motteURL, "WARD_MOTTE_KID": "cp",
 		"WARD_MOTTE_KEY_FILE": h.writeFile("motte.key", seed), "WARD_PUBLIC_URL": "http://" + h.addr,
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
-		"WARD_MIRRORS": string(entries), "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
+		"WARD_MIRRORS": string(entries), "WARD_RUNNERS": runners, "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
 		"WARD_SEED_MAX_OBJECTS": o.seedObjects, "WARD_SEED_MAX_INFLATED_BYTES": o.seedInflated,
 	}
 	adjust := func(c *config.Config) {
-		c.Mirror.Mirrors[0].Remote = h.remote.URL
+		if len(c.Mirror.Mirrors) > 0 {
+			c.Mirror.Mirrors[0].Remote = h.remote.URL
+		}
 		c.Mirror.Askpass = askpassBin
 	}
 	ctx, cancel := context.WithCancel(h.t.Context())
@@ -353,7 +431,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	first := !h.started
 	h.started = true
 	go func() {
-		done <- run(ctx, func(k string) string { return env[k] }, ln, mirror.Options{Clock: o.clock, Done: h.note, Logger: slog.New(slog.NewTextHandler(testLog{h.t}, nil))}, adjust)
+		done <- run(ctx, func(k string) string { return env[k] }, ln, mirror.Options{Clock: o.clock, Done: h.note, Logger: slog.New(slog.NewTextHandler(testLog{h.t, &h.logHook}, nil))}, adjust)
 	}()
 	p := &wardProc{h: h, URL: "http://" + h.addr}
 	var once sync.Once
@@ -366,7 +444,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		})
 	}
 	h.t.Cleanup(p.stop)
-	if o.noWait {
+	if o.noWait || o.noMirror {
 		return p
 	}
 	h.waitFor("ward to start", func() bool { return h.count("init") > before })
@@ -597,10 +675,16 @@ func gitErr(dir string, args ...string) error {
 	return cmd.Run()
 }
 
-type testLog struct{ t testing.TB }
+type testLog struct {
+	t    testing.TB
+	hook *atomic.Pointer[func(string)]
+}
 
 func (l testLog) Write(b []byte) (int, error) {
 	l.t.Log(strings.TrimSpace(string(b)))
+	if f := l.hook.Load(); f != nil {
+		(*f)(string(b))
+	}
 	return len(b), nil
 }
 
@@ -615,6 +699,21 @@ func (h *harness) proxy() *httptest.Server {
 		if g := h.motteGate.Load(); g != nil && r.URL.Path == "/v1/subscriptions" {
 			g.entered <- struct{}{}
 			<-g.release
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/lands") {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if bytes.Contains(body, []byte(`"ref":"main"`)) {
+				h.mu.Lock()
+				h.landBodies = append(h.landBodies, string(body))
+				h.mu.Unlock()
+				if h.holdLand.Load() {
+					rp.ServeHTTP(httptest.NewRecorder(), r)
+					h.landRecord <- struct{}{}
+					<-r.Context().Done()
+					return
+				}
+			}
 		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") && h.limitPushes.Load() && h.pushesLeft.Add(-1) < 0 {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -631,4 +730,16 @@ func (h *harness) holdMotte() (<-chan struct{}, func()) {
 	g := &gate{entered: make(chan struct{}, 8), release: make(chan struct{})}
 	h.motteGate.Store(g)
 	return g.entered, func() { h.motteGate.Store(nil); close(g.release) }
+}
+
+// hasTimer reports whether a timer is waiting for d from the fake now.
+func (c *fakeClock) hasTimer(d time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, t := range c.timers {
+		if t.at.Equal(c.now.Add(d)) {
+			return true
+		}
+	}
+	return false
 }
