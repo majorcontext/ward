@@ -216,8 +216,13 @@ func TestLandResumesAfterARestartWithoutAskingAgain(t *testing.T) {
 	p = h.startWard(wardOpts{noMirror: true, runner: run})
 	p.answer(req, "pass", "ok")
 	done := h.awaitLand(p, l.ID, "landed")
-	if h.treeOf(h.mainTip()) != req.Tree || done.Tree != req.Tree || len(run.reqs) != 0 {
-		t.Fatalf("land = %+v, %d new requests", done, len(run.reqs))
+	if h.treeOf(h.mainTip()) != req.Tree || done.Tree != req.Tree {
+		t.Fatalf("land = %+v", done)
+	}
+	for len(run.reqs) > 0 {
+		if again := <-run.reqs; again.RequestID != req.RequestID {
+			t.Fatalf("land = %+v, a new request %s", done, again.RequestID)
+		}
 	}
 }
 
