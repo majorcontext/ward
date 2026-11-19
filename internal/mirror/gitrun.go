@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -124,10 +125,28 @@ func (g *gitRunner) setLocalRefs(ctx context.Context, clone string, refs map[str
 	return nil
 }
 
+// autoGCDue applies the test of gc --auto without starting git: more than 27 loose objects in objects/17 (the
+// default gc.auto of 6700 over 256 directories) or more than 50 packs without a keep file (the default gc.autoPackLimit).
+func autoGCDue(clone string) bool {
+	if loose, _ := os.ReadDir(filepath.Join(clone, "objects", "17")); len(loose) > 27 {
+		return true
+	}
+	packs, _ := filepath.Glob(filepath.Join(clone, "objects", "pack", "*.pack"))
+	n := 0
+	for _, p := range packs {
+		if _, err := os.Stat(strings.TrimSuffix(p, ".pack") + ".keep"); err != nil {
+			n++
+		}
+	}
+	return n > 50
+}
+
 func (g *gitRunner) gc(ctx context.Context, clone string, prune bool) error {
 	args := []string{"gc", "--auto", "--quiet"}
 	if prune {
 		args = []string{"gc", "--prune=now", "--quiet"}
+	} else if !autoGCDue(clone) {
+		return nil
 	}
 	_, err := g.run(ctx, clone, gitCreds{KeepGC: true}, args...)
 	return err
