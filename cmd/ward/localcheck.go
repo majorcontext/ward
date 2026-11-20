@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
@@ -87,6 +88,8 @@ func runLocalOne(ctx context.Context, dir string, c check.Check, stdout, stderr 
 	cmd := exec.CommandContext(ctx, c.Run[0], c.Run[1:]...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
