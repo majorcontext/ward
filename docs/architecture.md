@@ -18,7 +18,7 @@ Non-goals:
 
 | Component | Responsibility | Phase |
 |---|---|---|
-| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
+| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land), `ward check` runs the checks of a working tree locally (see Local check). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
 | `internal/server` | HTTP routes, error envelope, token checks, status API, land route. | W2, W3, W4 |
@@ -350,6 +350,12 @@ Result key. A result belongs to the key `(repo, tree, check hash, env)`. `tree` 
 Runner. `WARD_RUNNERS` is a JSON list of `{repo, url, secret_file, env}`, one entry for each repository. An unknown field, a `url` that is not an `http` or `https` URL, a repeated `repo`, and a `secret_file` that is unreadable or empty refuse the start. `env` may be empty. ward reads `secret_file` for each request, so a rotated key applies with no restart. ward posts a check request to `url` with the JSON body `{request_id, repo, tree, commit, check, check_hash, env}`. `check` is the check object of the file. `commit` is a commit of motte whose tree is `tree`, so the runner can check it out. The header `Ward-Signature: sha256=<hex>` holds the HMAC-SHA256 of the body with the key of `secret_file`. An answer of 2xx accepts the request. Any other answer, or a network error, is retried with an exponential backoff from 1 second to 5 minutes. Each request to the runner has a time limit of 30 seconds. The backoff, the re-send deadline and that limit are the only timers of the checks. A request that has no result `timeout_seconds` plus 10 minutes after it was accepted is sent again with a new `request_id`. ward sends at most one request at a time for a key.
 
 The runner answers with `POST /v1/results` and a `check` token of the repository. The body is `{request_id, status, summary, log_url}`. `status` is `pass` or `fail`. A body with an unknown field, another `status`, a `summary` of more than 4096 bytes or a `log_url` of more than 2048 bytes answers 400 `invalid_body`. An unknown `request_id` answers 404 `not_found`. A request of another repository answers 403 `forbidden`. A second result for one request answers 200 and changes nothing. A result wakes the land that waits for it, so no land polls.
+
+### Local check
+
+`ward check [--dir PATH] [--only NAME]` reads `.ward/checks.json` from the working tree at `PATH` (default `.`), with the parser of the service (`check.ParseFile`), and runs the `run` vector of each check in file order at `PATH`. It streams the output of each check, and then prints a line `pass` or `fail` for each check with its time. `--only` runs the one check with that name. It exits 0 when every check passed, 1 when a check failed or timed out, and 2 on a usage error, an unreadable or invalid check file, or an unknown `--only` name. Each check has its `timeout_seconds`.
+
+The command is local and not authoritative. It never contacts a ward server and posts no result. A result counts for a land only when it is keyed by `(repo, tree, check hash, env)` and a runner with a `check` token posts it, so a pass on a workstation does not count for a land.
 
 ## Land
 

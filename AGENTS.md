@@ -50,3 +50,5 @@ go test -race -count=1 -p 1 -json ./... | go run ./internal/testtime
 test -z "$(gofmt -l .)"
 LEAK_DENYLIST="$(cat denylist.txt)" go run ./internal/leaklint
 ```
+
+`ward check` runs the checks of `.ward/checks.json` locally. The `chart` and `leak` jobs stay on GitHub.
