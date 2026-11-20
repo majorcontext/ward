@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -17,6 +16,9 @@ import (
 	"github.com/majorcontext/motte/api"
 
 	"github.com/majorcontext/ward/internal/check"
+	"github.com/majorcontext/ward/internal/identity"
+	"github.com/majorcontext/ward/internal/identity/bearer"
+	"github.com/majorcontext/ward/internal/identity/usertoken"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
@@ -31,14 +33,19 @@ type Deps struct {
 	Checks   *check.Manager
 	Store    mirror.Store
 	Verifier *token.Verifier
-	Registry *prometheus.Registry
-	Logger   *slog.Logger
-	Now      func() time.Time
+	// Human, when set, also authenticates the land routes. A caller token is tried first.
+	Human identity.Authenticator
+	// UserTokens, when set, serves the administration of per-user tokens to an operator token.
+	UserTokens usertoken.Store
+	Registry   *prometheus.Registry
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 // Server is the handler of every route.
 type Server struct {
 	d        Deps
+	bearer   bearer.Authenticator
 	mux      *http.ServeMux
 	requests *prometheus.CounterVec
 }
@@ -54,7 +61,7 @@ func New(d Deps) *Server {
 	if d.Registry == nil {
 		d.Registry = prometheus.NewRegistry()
 	}
-	s := &Server{d: d, mux: http.NewServeMux()}
+	s := &Server{d: d, mux: http.NewServeMux(), bearer: bearer.Authenticator{Verifier: d.Verifier, Now: d.Now}}
 	s.requests = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "ward_http_requests_total", Help: "Requests by route."}, []string{"route"})
 	d.Registry.MustRegister(s.requests)
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -68,6 +75,9 @@ func New(d Deps) *Server {
 	s.mux.HandleFunc("POST /v1/lands", s.land)
 	s.mux.HandleFunc("GET /v1/lands/{id}", s.getLand)
 	s.mux.HandleFunc("POST /v1/results", s.postResult)
+	s.mux.HandleFunc("POST /v1/tokens", s.createUserToken)
+	s.mux.HandleFunc("GET /v1/tokens", s.listUserTokens)
+	s.mux.HandleFunc("DELETE /v1/tokens/{id}", s.revokeUserToken)
 	return s
 }
 
@@ -78,6 +88,8 @@ type statusRecorder struct {
 	http.ResponseWriter
 	wrote bool
 }
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(status int) {
 	r.wrote = true
@@ -161,11 +173,8 @@ func (s *Server) hook(w http.ResponseWriter, r *http.Request) {
 
 // authenticate returns the claims of the bearer token, or writes 401 and returns false.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (token.Claims, bool) {
-	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if ok && s.d.Verifier != nil {
-		if c, err := s.d.Verifier.Verify(tok, s.d.Now()); err == nil {
-			return c, true
-		}
+	if c, err := s.bearer.Authenticate(r, ""); err == nil {
+		return c, true
 	}
 	writeError(w, codeUnauthorized, "unauthorized")
 	return token.Claims{}, false

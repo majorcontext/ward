@@ -513,6 +513,9 @@ func TestConfigRefusesWhatTheSpecificationRefuses(t *testing.T) {
 		"short hook secret":     {"WARD_MIRRORS": mirrors, "WARD_PUBLIC_URL": "http://w", "WARD_HOOK_SECRET_FILE": write("s", "short")},
 		"bad budget":            {"WARD_CLONE_DISK_BUDGET": "-1"},
 		"bad ttl":               {"WARD_CLONE_IDLE_TTL": "soon"},
+		"oidc without issuer":   {"WARD_OIDC_AUDIENCE": "a"},
+		"oidc bad algorithm":    {"WARD_OIDC_ISSUER": "https://i", "WARD_OIDC_AUDIENCE": "a", "WARD_OIDC_ALGS": "HS256", "WARD_OIDC_RULES": `[{"principals":["a@b"],"repos":["native:r"]}]`},
+		"tls without key":       {"WARD_TLS_CERT": "c.pem"},
 	} {
 		env := map[string]string{}
 		for k, v := range base {

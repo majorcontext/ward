@@ -15,6 +15,9 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
+	"github.com/majorcontext/ward/internal/identity"
+	"github.com/majorcontext/ward/internal/identity/oidc"
+	"github.com/majorcontext/ward/internal/identity/usertoken"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
@@ -43,6 +46,17 @@ func main() {
 		stop()
 		os.Exit(code)
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "token" || os.Args[1] == "login") {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		run := runToken
+		if os.Args[1] == "login" {
+			run = runLogin
+		}
+		code := run(ctx, os.Args[2:], os.Getenv, time.Now, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "check" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -51,7 +65,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version | land [--ref REF] [--delete-branch] REPO BRANCH | check [--dir PATH] [--only NAME]]")
+		fmt.Fprintln(os.Stderr, "usage: ward [version | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -107,7 +121,14 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 		return err
 	}
 	defer func() { cancelAll(); lands.Wait(); checks.Wait() }()
-	deps := server.Deps{Store: store, Verifier: token.NewVerifier(cfg.TrustedKeys...), Logger: opts.Logger, Land: lands, Checks: checks}
+	deps := server.Deps{Store: store, Verifier: token.NewVerifier(cfg.TrustedKeys...), Logger: opts.Logger, Land: lands, Checks: checks, UserTokens: store, Now: time.Now}
+	var viaOIDC identity.Authenticator
+	if cfg.OIDC != nil {
+		if viaOIDC, err = oidc.New(*cfg.OIDC); err != nil {
+			return err
+		}
+	}
+	deps.Human = identity.Chain(viaOIDC, usertoken.Authenticator{Store: store, Now: deps.Now})
 	var engine *mirror.Engine
 	if len(cfg.Mirror.Mirrors) > 0 {
 		engine = mirror.New(cfg.Mirror, store, opts)
@@ -120,7 +141,13 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	}
 	srv := &http.Server{Handler: server.New(deps), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() {
+		if cfg.TLSCert != "" {
+			errc <- srv.ServeTLS(ln, cfg.TLSCert, cfg.TLSKey)
+			return
+		}
+		errc <- srv.Serve(ln)
+	}()
 	engineDone := make(chan struct{})
 	go func() {
 		defer close(engineDone)

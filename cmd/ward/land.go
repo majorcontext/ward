@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/config"
+	"github.com/majorcontext/ward/internal/devicelogin"
 	"github.com/majorcontext/ward/internal/token"
 )
 
@@ -54,19 +55,25 @@ type landEnvelope struct {
 	Error landError `json:"error"`
 }
 
-// landToken returns WARD_TOKEN, or a land token that it signs for repo with the key file of WARD_KEY_FILE and WARD_KID.
-func landToken(getenv func(string) string, repo string, now time.Time) (string, error) {
+// credential returns WARD_TOKEN, or a token of scope for repo that it signs with the key file of WARD_KEY_FILE and WARD_KID, or
+// the token that `ward login` saved.
+func credential(getenv func(string) string, scope token.Scope, repo string, now time.Time) (string, error) {
 	if tok := getenv("WARD_TOKEN"); tok != "" {
 		return tok, nil
 	}
-	if getenv("WARD_KEY_FILE") == "" || getenv("WARD_KID") == "" {
-		return "", errors.New("set WARD_TOKEN, or WARD_KEY_FILE and WARD_KID")
+	if getenv("WARD_KEY_FILE") != "" && getenv("WARD_KID") != "" {
+		key, err := config.ReadPrivateKey(getenv("WARD_KEY_FILE"))
+		if err != nil {
+			return "", fmt.Errorf("WARD_KEY_FILE: %w", err)
+		}
+		return token.Signer{Kid: getenv("WARD_KID"), Key: key}.Mint(token.Claims{Scope: scope, Repo: repo, Subject: "ward-cli", Exp: now.Add(landTokenLife).Unix()})
 	}
-	key, err := config.ReadPrivateKey(getenv("WARD_KEY_FILE"))
-	if err != nil {
-		return "", fmt.Errorf("WARD_KEY_FILE: %w", err)
+	if path, err := devicelogin.DefaultPath("ward"); err == nil {
+		if t, err := devicelogin.Load(path, now); err == nil {
+			return t.Value, nil
+		}
 	}
-	return token.Signer{Kid: getenv("WARD_KID"), Key: key}.Mint(token.Claims{Scope: token.ScopeLand, Repo: repo, Subject: "ward-cli", Exp: now.Add(landTokenLife).Unix()})
+	return "", errors.New("set WARD_TOKEN, or WARD_KEY_FILE and WARD_KID, or run ward login")
 }
 
 // runLand is `ward land [--ref REF] [--delete-branch] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
@@ -80,7 +87,7 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		return 2
 	}
 	repo, branch := fs.Arg(0), fs.Arg(1)
-	tok, err := landToken(getenv, repo, now())
+	tok, err := credential(getenv, token.ScopeLand, repo, now())
 	if err != nil {
 		fmt.Fprintln(stderr, "ward land:", err)
 		return 2
@@ -115,6 +122,10 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 	}
 }
 
+// noRedirect never follows a redirect, so a credential header never reaches another origin.
+var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+// landClient sends its token as a bearer token.
 type landClient struct{ base, tok string }
 
 // call sends one request and decodes the land of the answer. A non-zero code is the exit code of a failure that it has reported.
@@ -128,7 +139,7 @@ func (c *landClient) call(ctx context.Context, method, path string, body []byte,
 	}
 	req.Header.Set("Authorization", "Bearer "+c.tok)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := noRedirect.Do(req)
 	if err != nil {
 		fmt.Fprintln(stderr, "ward land: the request failed")
 		return landAnswer{}, 1

@@ -13,6 +13,7 @@ import (
 
 	"github.com/majorcontext/motte/client"
 
+	"github.com/majorcontext/ward/internal/identity/identitytest"
 	"github.com/majorcontext/ward/internal/token"
 )
 
@@ -249,5 +250,85 @@ func TestLandFailsWithLandTimeoutWhenMotteReadsNeverEndInTime(t *testing.T) {
 	got := h.awaitLand(p, l.ID, "failed")
 	if got.Error == nil || got.Error.Code != "land_timeout" {
 		t.Fatalf("land = %+v, want the error land_timeout", got)
+	}
+}
+
+func TestLandAcceptsAnOIDCIdentityOnItsRepositoryOnly(t *testing.T) {
+	h := newLandHarness(t)
+	iss := identitytest.NewIssuer(t, "k1")
+	p := h.startWard(wardOpts{noMirror: true, oidc: iss})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	jwt := func(email string) string {
+		return iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": email, "exp": time.Now().Add(time.Hour).Unix()})
+	}
+	dev := jwt("dev@dev.test")
+	if code, body := p.do("POST", "/v1/lands", jwt("dev@other.test"), h.landBody("feature/x", nil), nil); code != http.StatusUnauthorized {
+		t.Fatalf("an identity that no rule lists: status = %d %s", code, body)
+	}
+	if code, body := p.do("POST", "/v1/lands", dev, h.landBody("feature/x", map[string]any{"repo": "native:other"}), nil); code != http.StatusUnauthorized {
+		t.Fatalf("a repository that no rule lists: status = %d %s", code, body)
+	}
+	code, body := p.do("POST", "/v1/lands", dev, h.landBody("feature/x", nil), nil)
+	var l landState
+	if code != http.StatusAccepted || json.Unmarshal(body, &l) != nil || l.ID == "" {
+		t.Fatalf("land by an OIDC identity = %d %s", code, body)
+	}
+	for path, want := range map[string]int{"/v1/lands/" + l.ID: http.StatusOK, "/v1/lands/nope": http.StatusUnauthorized, "/v1/mirrors": http.StatusUnauthorized, "/v1/tokens": http.StatusUnauthorized} {
+		if code, _ := p.do("GET", path, dev, nil, nil); code != want {
+			t.Errorf("GET %s by an OIDC identity: status = %d, want %d", path, code, want)
+		}
+	}
+}
+
+func TestOperatorIssuesAUserTokenThatLandsUntilRevoked(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	op := h.token(token.ScopeOperator, "")
+	create := func(tok string, body map[string]any) (int, []byte) {
+		raw, _ := json.Marshal(body)
+		return p.do("POST", "/v1/tokens", tok, raw, nil)
+	}
+	grant := map[string]any{"principal": "dev@example.test", "scope": "land", "repos": []string{h.repo}}
+	for name, tok := range map[string]string{"none": "", "land": h.landToken(h.repo)} {
+		if code, _ := create(tok, grant); code != http.StatusUnauthorized && code != http.StatusForbidden {
+			t.Errorf("issue with %s token: status = %d, want a refusal", name, code)
+		}
+	}
+	if code, _ := create(op, map[string]any{"principal": "dev@example.test", "scope": "operator", "repos": []string{h.repo}}); code != http.StatusBadRequest {
+		t.Errorf("a token with the scope operator: status = %d, want 400", code)
+	}
+	code, body := create(op, grant)
+	var made struct {
+		Token     string              `json:"token"`
+		UserToken struct{ ID string } `json:"user_token"`
+	}
+	if code != http.StatusCreated || json.Unmarshal(body, &made) != nil || made.Token == "" {
+		t.Fatalf("issue = %d %s", code, body)
+	}
+	if code, _ := create(made.Token, grant); code != http.StatusUnauthorized {
+		t.Errorf("issue with a user token: status = %d, want 401", code)
+	}
+	if code, _ := p.do("POST", "/v1/lands", made.Token, h.landBody("feature/x", map[string]any{"repo": "native:other"}), nil); code != http.StatusUnauthorized {
+		t.Errorf("land on an unlisted repository: status = %d, want 401", code)
+	}
+	if code, body := p.do("POST", "/v1/lands", made.Token, h.landBody("feature/x", nil), nil); code != http.StatusAccepted {
+		t.Fatalf("land by a user token = %d %s", code, body)
+	}
+	if code, body := p.do("GET", "/v1/tokens", op, nil, nil); code != http.StatusOK || !strings.Contains(string(body), made.UserToken.ID) || strings.Contains(string(body), made.Token) {
+		t.Errorf("list = %d %s, want the id and never the token", code, body)
+	}
+	if code, _ := p.do("DELETE", "/v1/tokens/"+made.UserToken.ID, op, nil, nil); code != http.StatusNoContent {
+		t.Fatalf("revoke: status = %d", code)
+	}
+	if code, _ := p.do("POST", "/v1/lands", made.Token, h.landBody("feature/x", nil), nil); code != http.StatusUnauthorized {
+		t.Errorf("land by a revoked token: status = %d, want 401", code)
+	}
+	env := map[string]string{"WARD_URL": p.URL, "WARD_TOKEN": op}
+	var out, errOut bytes.Buffer
+	if code := runToken(t.Context(), []string{"create", "--principal", "dev@example.test", "--repo", h.repo}, func(k string) string { return env[k] }, time.Now, &out, &errOut); code != 0 || !strings.HasPrefix(out.String(), "wdu_") {
+		t.Errorf("ward token create: exit %d, stdout %q, stderr %q", code, out.String(), errOut.String())
 	}
 }

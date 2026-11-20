@@ -34,6 +34,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
+	"github.com/majorcontext/ward/internal/identity/identitytest"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
 )
@@ -356,6 +357,8 @@ type wardOpts struct {
 	noMirror bool
 	// readBudget sets the time limit of a read of motte by a land.
 	readBudget time.Duration
+	// oidc turns on OIDC identities, signed by this issuer, for the users of the domain dev.test on the repository of the harness.
+	oidc *identitytest.Issuer
 }
 
 type wardProc struct {
@@ -423,6 +426,10 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
 		"WARD_MIRRORS": string(entries), "WARD_RUNNERS": runners, "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
 		"WARD_SEED_MAX_OBJECTS": o.seedObjects, "WARD_SEED_MAX_INFLATED_BYTES": o.seedInflated,
+	}
+	if o.oidc != nil {
+		rules, _ := json.Marshal([]map[string]any{{"principals": []string{"@dev.test"}, "repos": []string{h.repo}}})
+		env["WARD_OIDC_ISSUER"], env["WARD_OIDC_AUDIENCE"], env["WARD_OIDC_KEYS_URL"], env["WARD_OIDC_RULES"] = "https://idp.example.test", "aud1", o.oidc.URL, string(rules)
 	}
 	adjust := func(c *config.Config) {
 		if len(c.Mirror.Mirrors) > 0 {

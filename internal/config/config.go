@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
+	"github.com/majorcontext/ward/internal/identity/oidc"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
@@ -34,6 +35,9 @@ type Config struct {
 	Land        land.Config
 	Runners     []check.Runner
 	TrustedKeys []token.Key
+	OIDC        *oidc.Config
+	TLSCert     string
+	TLSKey      string
 	OTLP        bool
 }
 
@@ -72,6 +76,13 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if c.TrustedKeys, err = parseTrustedKeys(getenv("WARD_TRUSTED_KEYS")); err != nil {
 		return c, fmt.Errorf("WARD_TRUSTED_KEYS: %w", err)
+	}
+	if c.OIDC, err = loadOIDC(getenv); err != nil {
+		return c, err
+	}
+	c.TLSCert, c.TLSKey = getenv("WARD_TLS_CERT"), getenv("WARD_TLS_KEY")
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return c, errors.New("WARD_TLS_CERT and WARD_TLS_KEY go together")
 	}
 	if raw := getenv("WARD_MIRRORS"); raw != "" {
 		if c.Mirror.Mirrors, err = mirror.ParseEntries([]byte(raw)); err != nil {
@@ -190,4 +201,28 @@ func parseTrustedKeys(raw string) ([]token.Key, error) {
 		keys = append(keys, tk)
 	}
 	return keys, nil
+}
+
+func loadOIDC(getenv func(string) string) (*oidc.Config, error) {
+	issuer := getenv("WARD_OIDC_ISSUER")
+	if issuer == "" {
+		for _, k := range []string{"AUDIENCE", "RULES", "KEYS_URL", "HEADER", "CLAIM", "ALGS"} {
+			if getenv("WARD_OIDC_"+k) != "" {
+				return nil, errors.New("WARD_OIDC_* variables need WARD_OIDC_ISSUER")
+			}
+		}
+		return nil, nil
+	}
+	cfg := &oidc.Config{Issuer: issuer, Audience: getenv("WARD_OIDC_AUDIENCE"), KeysURL: getenv("WARD_OIDC_KEYS_URL"),
+		Header: getenv("WARD_OIDC_HEADER"), Claim: getenv("WARD_OIDC_CLAIM")}
+	if algs := getenv("WARD_OIDC_ALGS"); algs != "" {
+		cfg.Algs = strings.Split(algs, ",")
+	}
+	if err := json.Unmarshal([]byte(getenv("WARD_OIDC_RULES")), &cfg.Rules); err != nil || len(cfg.Rules) == 0 {
+		return nil, errors.New("WARD_OIDC_RULES must be a non-empty JSON list of {\"principals\",\"repos\"}")
+	}
+	if _, err := oidc.New(*cfg); err != nil {
+		return nil, fmt.Errorf("WARD_OIDC_*: %w", err)
+	}
+	return cfg, nil
 }

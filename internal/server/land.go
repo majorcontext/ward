@@ -14,7 +14,11 @@ import (
 	"github.com/majorcontext/ward/internal/token"
 )
 
-const maxLandBody = 64 << 10
+const (
+	maxLandBody = 64 << 10
+	// bodyReadLimit bounds the read of a body before the caller is known.
+	bodyReadLimit = 10 * time.Second
+)
 
 type landRequest struct {
 	Repo         string `json:"repo"`
@@ -51,29 +55,47 @@ func viewOf(l land.Land) landView {
 	return v
 }
 
-// landClaims returns the claims of a land token, or writes the refusal and returns false.
-func (s *Server) landClaims(w http.ResponseWriter, r *http.Request) (token.Claims, bool) {
-	c, ok := s.authenticate(w, r)
-	if !ok {
-		return c, false
+// landClaims returns the claims of a land token, or of a human identity for the repository that repo names, or
+// writes the refusal and returns false. repo runs only when the human identity is tried.
+func (s *Server) landClaims(w http.ResponseWriter, r *http.Request, repo func() string) (token.Claims, bool) {
+	c, err := s.bearer.Authenticate(r, "")
+	if err != nil && s.d.Human != nil {
+		c, err = s.d.Human.Authenticate(r, repo())
 	}
-	if c.Scope != token.ScopeLand {
+	switch {
+	case err != nil:
+		writeError(w, codeUnauthorized, "unauthorized")
+	case c.Scope != token.ScopeLand:
 		writeError(w, codeForbidden, "forbidden")
-		return c, false
+	default:
+		return c, true
 	}
-	return c, true
+	return c, false
 }
 
 func (s *Server) land(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.landClaims(w, r)
+	var req landRequest
+	var bodyErr error
+	loaded := false
+	load := func() {
+		if loaded {
+			return
+		}
+		loaded = true
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyReadLimit))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLandBody))
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if bodyErr = dec.Decode(&req); err != nil {
+			bodyErr = err
+		}
+	}
+	c, ok := s.landClaims(w, r, func() string { load(); return req.Repo })
 	if !ok {
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLandBody))
-	var req landRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
-	if err != nil || dec.Decode(&req) != nil || req.Repo == "" || req.Branch == "" {
+	load()
+	if bodyErr != nil || req.Repo == "" || req.Branch == "" {
 		writeError(w, codeInvalidBody, "the body needs repo and branch")
 		return
 	}
@@ -94,7 +116,15 @@ func (s *Server) land(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getLand(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.landClaims(w, r)
+	id := r.PathValue("id")
+	repo := func() string {
+		l, ok, err := s.d.Land.Get(r.Context(), id, 0, "")
+		if err != nil || !ok {
+			return ""
+		}
+		return l.Repo
+	}
+	c, ok := s.landClaims(w, r, repo)
 	if !ok {
 		return
 	}
@@ -114,7 +144,6 @@ func (s *Server) getLand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeInvalidBody, "state is queued, checking, landing, landed or failed")
 		return
 	}
-	id := r.PathValue("id")
 	l, ok, err := s.d.Land.Get(r.Context(), id, 0, "")
 	if err == nil && ok && l.Repo == c.Repo && wait > 0 {
 		l, ok, err = s.d.Land.Get(r.Context(), id, wait, known)

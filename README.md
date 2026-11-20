@@ -19,4 +19,23 @@ The local loop:
 3. Push the branch.
 4. Run `ward land REPO BRANCH` (see `docs/architecture.md`, Land). The runner of the repository proves each check on the exact tree, and the land moves `main` only when every check passed.
 
+A person needs no identity provider, no tunnel and no box. `WARD_URL` and `MOTTE_URL` are the addresses of the deployments, and `REPO` is the repository path. An operator who holds an operator token (`WARD_TOKEN`, or `WARD_KEY_FILE` and `WARD_KID` of a trusted key) issues a token for you:
+
+```
+WARD_URL=$WARD_URL ward token create --principal you@example.test --repo native:REPO
+```
+
+The command prints the token once. `ward land` sends it as a bearer token. Git talks to motte, which holds its own per-user tokens: the same operator issues one with `motte token create` (see motte), and Git sends it as the password.
+
+```
+git clone https://you:MOTTE_TOKEN@MOTTE_HOST/git/REPO.git && cd REPO && git switch -c my-change
+ward check
+git push origin my-change
+WARD_URL=$WARD_URL WARD_TOKEN=WARD_TOKEN ward land REPO my-change
+```
+
+`ward token list` shows the tokens and `ward token revoke ID` revokes one. `git push` writes a branch and never a protected `main`: only `ward land` lands a branch.
+
+A deployment that trusts an OIDC issuer (`WARD_OIDC_*`) lets you sign in without a token: `WARD_OIDC_ISSUER=ISSUER WARD_OIDC_CLIENT_ID=ID ward login` runs the OAuth device flow and saves the token with mode 0600, and `ward land` uses it. An identity-aware proxy that signs a JWT in its own header, such as Cloudflare Access, is one configuration of the same verifier (see `docs/architecture.md`, Human identity). ward serves TLS itself when `WARD_TLS_CERT` and `WARD_TLS_KEY` are set.
+
 A box that runs the same commands is an optional place to work. The local loop needs no box.

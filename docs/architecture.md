@@ -18,9 +18,10 @@ Non-goals:
 
 | Component | Responsibility | Phase |
 |---|---|---|
-| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land), `ward check` runs the checks of a working tree locally (see Local check). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
+| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land), `ward token` and `ward login` manage the credential of a person (see Human identity), `ward check` runs the checks of a working tree locally (see Local check). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
+| `internal/identity` | The seam that turns the credential of a request into claims, its suite and its three implementations, and the per-user token store (see Provider seams). | W5 |
 | `internal/server` | HTTP routes, error envelope, token checks, status API, land route. | W2, W3, W4 |
 | `internal/land` | The land (see Land): merge base, the land queue, the candidate and the call to motte. | W3, W5 |
 | `internal/check` | Checks (see Checks): the check file, the result store, and the delivery of check requests to the runner. | W5 |
@@ -58,6 +59,14 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_PUBLIC_URL` | Base URL under which motte reaches ward. The receiver URL is this value plus `/v1/hooks/motte`. Required when a mirror is configured. |
 | `WARD_HOOK_SECRET_FILE` | Path of the file that holds the subscription secret (16 to 256 bytes, with a final line break removed). Required when a mirror is configured. |
 | `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read`, `operator`, `land` and `check`. The service refuses to start on any other scope text. |
+| `WARD_OIDC_ISSUER` | Optional. The exact `iss` claim of an OIDC issuer. Turns on OIDC identities on the land routes (see Human identity). Off by default. |
+| `WARD_OIDC_AUDIENCE` | The `aud` claim. Required with the issuer. |
+| `WARD_OIDC_RULES` | JSON list of `{"principals","repos"}`. A principal is a claim value (an email by default) or `@domain`. `repos` holds repository texts. Required with the issuer. |
+| `WARD_OIDC_KEYS_URL` | Optional. Address of the key set. Default: the `jwks_uri` of `<issuer>/.well-known/openid-configuration`. |
+| `WARD_OIDC_HEADER` | Optional. Header that carries the JWT. Default `Authorization` (a Bearer token, or the password of Basic). Any other header carries the bare JWT. |
+| `WARD_OIDC_CLAIM` | Optional. Claim that the rules match. Default `email`. |
+| `WARD_OIDC_ALGS` | Optional. Comma-separated algorithms from `RS256`, `RS384`, `RS512`, `ES256`, `ES384`. Default `RS256`. |
+| `WARD_TLS_CERT`, `WARD_TLS_KEY` | Optional. PEM files. When both are set ward serves TLS itself. When neither is set it serves plain HTTP for a reverse proxy, a tunnel or a local run. One without the other is an error. |
 | `WARD_MIRRORS` | JSON list of mirror entries (see Mirror, Configuration). Optional. |
 | `WARD_RUNNERS` | JSON list of runner entries (see Checks, Runner). Optional. A repository with a check file and no runner fails each land onto that ref with `land_invalid`. |
 | `WARD_GITHUB_API_URL` | Base URL of the GitHub API for the GitHub App credential. An `http` or `https` URL. Default `https://api.github.com`. |
@@ -89,6 +98,38 @@ A caller token has the same encoding as a motte grant: `wd1.<base64url payload>.
 | `exp` | Expiry as Unix seconds. A token is valid while `now < exp`. |
 
 `read` names one repository and may read its mirror status. `operator` may read every status and may trigger a repair. `land` names one repository and may land a branch of it and read its lands (see Land); it reads no status. `check` names one repository and may post check results of it (see Checks); it does nothing else. The verifier holds only public keys, each with a set of allowed scopes. Every rejection answers 401 `unauthorized` with the same body, and the response never carries the token. ward takes the repository from the token, never from an unchecked request field.
+
+## Human identity
+
+A person lands with no caller token in one of two ways, and neither needs a vendor. Each is an `identity.Authenticator`, tried after the caller token. A human identity gives only the scope `land` on a listed repository, with the principal as `subject`. It reads no status, posts no check result, triggers no repair, mints no token and never gets a grant of motte. ward lands with its own `merge` grant, so `main` stays land-only.
+
+Only `POST /v1/lands` and `GET /v1/lands/{id}` accept a human identity. The repository is the `repo` of the body, or the repository of the land that `{id}` names. An unknown `id` answers 401 for a human identity, so an id is no oracle.
+
+OIDC identity (`internal/identity/oidc`). ward verifies a JWT from the issuer of `WARD_OIDC_ISSUER` and trusts no header that is not a valid JWT.
+
+- The JWT must use an algorithm of `WARD_OIDC_ALGS`, be signed by a key of the key set (cached for 1 hour; a `kid` that the cache does not hold causes one new fetch a minute; a cache that is 1 hour past its last good fetch is refused), with `iss` equal to the issuer, `aud` holding the audience, `now < exp`, `nbf <= now` and a non-empty value in the claim `WARD_OIDC_CLAIM`. Any failure answers 401 `unauthorized`.
+- A rule of `WARD_OIDC_RULES` lists the principals that may land on each repository. No matching rule answers 401. The match ignores case for the claim `email` and is exact for any other claim.
+- An identity-aware proxy that signs a JWT in its own header is one configuration of the same verifier: set `WARD_OIDC_HEADER`, `WARD_OIDC_ISSUER`, `WARD_OIDC_AUDIENCE` and `WARD_OIDC_KEYS_URL` to its values. For Cloudflare Access the header is `Cf-Access-Jwt-Assertion`, the issuer is `https://<team>.cloudflareaccess.com` and the key set is at `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`.
+
+Per-user tokens (`internal/identity/usertoken`). They need no issuer. An operator issues one with `POST /v1/tokens` and `{principal, scope, repos, ttl_seconds}`, or with `ward token create --principal P [--scope land] --repo R [--repo R]... [--ttl D]`. `scope` is `land` and `repos` holds at least one repository. Only a signed caller token with the scope `operator` reaches the three token routes: a human identity, and any other token, cannot issue, list or revoke.
+
+- A token is `wdu_` and 43 characters of base64url from 32 random bytes. The answer 201 `{token, user_token}` shows it once. The state store keeps the SHA-256 hex of it with the ID `ut_<16 hex>`, the principal, the scope, the repositories, the creation time, the expiry and the revocation time (table `user_tokens`, created with the other tables at open).
+- `GET /v1/tokens` lists the records, newest first, with no token text. `DELETE /v1/tokens/{id}` revokes and answers 204, or 404 `not_found` for an unknown ID. A repeat keeps the first revocation time.
+- A token is accepted as `Authorization: Bearer <token>` or as the password of HTTP Basic. A token that is unknown, revoked, past its expiry or not listed for the repository answers 401.
+- `ward token list` and `ward token revoke ID` call `GET /v1/tokens` and `DELETE /v1/tokens/{id}`. The commands read `WARD_URL` and an operator token from `WARD_TOKEN`, or sign one with `WARD_KEY_FILE` and `WARD_KID`.
+
+`ward login` runs the OAuth device authorization flow (RFC 8628) against `WARD_OIDC_ISSUER` with the client `WARD_OIDC_CLIENT_ID`. It reads the endpoints from the discovery document, polls the token endpoint with `slow_down` and `authorization_pending` handled, and saves the ID token (else the access token) in `<user config dir>/ward/login.json` with mode 0600. `ward login --print` prints it. `ward land` uses it when `WARD_TOKEN` and the key file are unset.
+
+The local loop of a person needs no identity provider, no tunnel and no box: an operator token, `ward token create`, plain `git` with the token as the password, `ward check` and `ward land` (see README, Developing ward). ward serves TLS itself when `WARD_TLS_CERT` and `WARD_TLS_KEY` are set, and no code assumes a proxy or a tunnel.
+
+## Provider seams
+
+| Seam | Interface | Suite | Implementations | Gap |
+|---|---|---|---|---|
+| identity | `internal/identity.Authenticator` | `internal/identity/identitytest.Run` | `internal/identity/bearer`, `internal/identity/oidc`, `internal/identity/usertoken` | |
+| user token store | `internal/identity/usertoken.Store` | `internal/identity/usertoken/usertokentest.Run` | `internal/mirror/sqlite`, `usertokentest.Mem` | |
+
+The suite `identitytest.Run` has an optional Revoked case for a credential that can be revoked. The header, the claim and the key set address of an issuer are configuration, and a vendor host name appears only in documents.
 
 ## Errors
 
@@ -374,7 +415,7 @@ Queue. One worker for each `(repo, ref)` takes the lands of that ref one at a ti
 5. Land. ward calls `POST /v1/repos/{repo}/lands` of motte with `{id, ref, base, head, expect_tree}`, where `expect_tree` is the tree of the candidate and `id` is `<land id>-<attempt>`. `attempt` counts the times that the land reached step 5, from 1. ward stores `attempt`, `base`, `head` and `expect_tree` before the call, so a repeat after a crash carries the same `id` and values, and motte answers it with the first result. The call carries a `merge` grant that ward signs with its own key (see Service). The grant lives 5 minutes and has the subject `ward`. A `merge` grant lands on a protected ref, so a protected `main` is landable. A success ends the land as `landed` with the answer of motte. An answer 409 `vcs_land_stale` means that another writer moved the ref. ward goes back to step 1, at most 8 times, and then fails the land with `land_stale`. A failure of motte that does not end in time is tried again from step 1 in the same way. It counts against the same 8 times, and then the land fails with `land_timeout`. A failure that does not end in time is a `vcs_land_timeout`, or a call that passes its time limit. A read has a limit of 10 seconds, because a replica of motte can need several seconds for its first reads. The land call has the limit of the client, 35 seconds. A land call that passes its limit is repeated with the same `id` and values, because motte may have done it. An answer `vcs_land_conflict` fails the land with `land_conflict`. The answers `vcs_land_invalid`, `vcs_not_found` and `vcs_object_too_large` fail it with `land_invalid`. Any other failure of motte fails it with `internal_error`.
 6. Clean up. ward deletes `refs/ward/candidates/<id>`. If `delete_branch` is true and the land succeeded, ward deletes the stored ref `branch` with the generation that it read in step 1. A delete that fails does not fail the land.
 
-`ward land [--ref REF] [--delete-branch] REPO BRANCH` posts the land and then reads it with `wait=60` until it ends. It sends `wait=60` and `state=` with the last state that it saw. It reads `WARD_URL`, and a token from `WARD_TOKEN`, or else it signs a `land` token for `REPO` that lives 1 hour, with the Ed25519 key file `WARD_KEY_FILE` and the `kid` `WARD_KID`. It prints `checking <name>` once for each required check that has no pass when the state is first `checking`. On success it prints the lines `landed ...`, `tip <commit>`, `generation <n>`, `fast-forward` when it applies, one `<old> -> <new>` for each commit, and `branch deleted` when it applies, and it exits 0. On a failed land it prints the code and the message to standard error, the paths of a conflict, and the check, summary and log URL of `check_failed`, and exits 1. Any other failure exits 1. A usage error or a missing credential exits 2.
+`ward land [--ref REF] [--delete-branch] REPO BRANCH` posts the land and then reads it with `wait=60` until it ends. It sends `wait=60` and `state=` with the last state that it saw. It reads `WARD_URL`, and a token from `WARD_TOKEN`, or else it signs a `land` token for `REPO` that lives 1 hour, with the Ed25519 key file `WARD_KEY_FILE` and the `kid` `WARD_KID`. Else it uses the token that `ward login` saved (see Human identity). With none of these it exits 2. It sends the token as `Authorization: Bearer`. It prints `checking <name>` once for each required check that has no pass when the state is first `checking`. On success it prints the lines `landed ...`, `tip <commit>`, `generation <n>`, `fast-forward` when it applies, one `<old> -> <new>` for each commit, and `branch deleted` when it applies, and it exits 0. On a failed land it prints the code and the message to standard error, the paths of a conflict, and the check, summary and log URL of `check_failed`, and exits 1. Any other failure exits 1. A usage error or a missing credential exits 2.
 
 Contract tests land through a real motte and a fake runner that the test drives. They check: a land onto a ref without a check file; a land that waits for a pass and then lands the exact tree; a fail that ends the land and moves nothing; the reuse of a pass by a later land of the same tree; a fail that a later land of the same tree asks for again; a flaky check; a check file that a branch changes, which does not judge that branch; a ref that another writer moves during the checks, which makes the land check the new candidate; a conflict with its paths and an unmoved ref; a restart that resumes a land; the refusal of a token without the `land` or `check` scope or for another repository; `delete_branch`; and the exit codes of the command.
 

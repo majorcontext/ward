@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/majorcontext/ward/internal/check"
+	"github.com/majorcontext/ward/internal/identity/usertoken"
+	"github.com/majorcontext/ward/internal/identity/usertoken/usertokentest"
 	"github.com/majorcontext/ward/internal/mirror/sqlite"
 )
 
@@ -54,4 +56,16 @@ func TestSupersedeKeepsARequestThatAResultAlreadyEnded(t *testing.T) {
 	if open, err := s.OpenRequests(t.Context()); err != nil || len(open) != 0 {
 		t.Fatalf("open requests = %v, err %v: a request opened for a key whose request had ended", open, err)
 	}
+}
+
+func TestUserTokenStoreConformance(t *testing.T) {
+	t.Parallel()
+	usertokentest.Run(t, func(t *testing.T) usertoken.Store {
+		s, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
 }
