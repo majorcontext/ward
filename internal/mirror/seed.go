@@ -187,20 +187,33 @@ func (e *Engine) copyOnce(ctx context.Context, en Entry, motteRefs []api.Ref) er
 		}
 		return tips[i].Git < tips[j].Git
 	})
-	var held []string
+	var held, motteCommits []string
 	current := map[string]string{}
 	for _, r := range motteRefs {
 		current[r.Name] = r.Commit
-		if e.git.hasCommit(ctx, clone, r.Commit) {
-			held = append(held, r.Commit)
+		motteCommits = append(motteCommits, r.Commit)
+	}
+	reader, err := e.git.openReader(ctx, clone)
+	if err != nil {
+		return err
+	}
+	defer reader.close()
+	for i, have := range reader.commitsOf(motteCommits) {
+		if have != "" {
+			held = append(held, motteCommits[i])
 		}
 	}
-	for _, t := range tips {
+	tipNames := make([]string, len(tips))
+	for i, t := range tips {
+		tipNames[i] = t.Tip
+	}
+	peeled := reader.commitsOf(tipNames)
+	for i, t := range tips {
 		stored, _ := StoredRef(t.Git)
 		if current[stored] == t.Tip {
 			continue
 		}
-		if err := e.pushSeedRef(ctx, en, clone, t, stored, current[stored], &held); err != nil {
+		if err := e.pushSeedRef(ctx, en, clone, reader, t, peeled[i], stored, current[stored], &held); err != nil {
 			return err
 		}
 	}
@@ -252,9 +265,8 @@ func (e *Engine) fetchRemoteRefs(ctx context.Context, en Entry, clone string) ([
 }
 
 // pushSeedRef moves one ref of motte from lease to the tip in chunks. held lists the commits that motte holds.
-func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seedTip, stored, lease string, held *[]string) error {
+func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, sizer *objReader, t seedTip, commit, stored, lease string, held *[]string) error {
 	var chain []string
-	commit := e.git.peel(ctx, clone, t.Tip)
 	if commit != "" {
 		var err error
 		if chain, err = e.git.firstParents(ctx, clone, commit, *held); err != nil {
@@ -267,7 +279,7 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, t seed
 		if from >= 0 {
 			not = append(not, chain[from])
 		}
-		ok, err := e.git.fitsPush(ctx, clone, chain[to], not, e.cfg.SeedMaxObjects, e.cfg.SeedMaxBytes, e.cfg.SeedMaxInflated)
+		ok, err := e.git.fitsPush(ctx, sizer, clone, chain[to], not, e.cfg.SeedMaxObjects, e.cfg.SeedMaxBytes, e.cfg.SeedMaxInflated)
 		if err != nil {
 			probeErr = err
 			return true

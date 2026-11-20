@@ -25,7 +25,7 @@ func (e *Engine) ensureClone(ctx context.Context, repo string) (string, error) {
 		if err := os.MkdirAll(e.clonesDir(), 0o755); err != nil {
 			return "", err
 		}
-		if err := e.git.initBare(ctx, path); err != nil {
+		if err := e.git.initBare(path); err != nil {
 			return "", err
 		}
 	}

@@ -85,14 +85,23 @@ func (g *gitRunner) runIn(ctx context.Context, dir string, c gitCreds, stdin str
 	return stdout.String(), nil
 }
 
-func (g *gitRunner) initBare(ctx context.Context, path string) error {
-	_, err := g.run(ctx, g.home, gitCreds{}, "init", "--bare", "-q", path)
-	return err
-}
-
-func (g *gitRunner) hasCommit(ctx context.Context, clone, sha string) bool {
-	_, err := g.run(ctx, clone, gitCreds{}, "cat-file", "-e", sha+"^{commit}")
-	return err == nil
+// initBare creates an empty bare repository without starting git.
+func (g *gitRunner) initBare(path string) error {
+	for _, d := range []string{"objects/pack", "objects/info", "refs/heads", "refs/tags"} {
+		if err := os.MkdirAll(filepath.Join(path, d), 0o755); err != nil {
+			return err
+		}
+	}
+	files := map[string]string{
+		"HEAD":   "ref: refs/heads/main\n",
+		"config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(path, name), []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (g *gitRunner) fetch(ctx context.Context, clone, url string, c gitCreds, shas []string) error {

@@ -93,15 +93,26 @@ func (e *Engine) readTargets(ctx context.Context, en Entry, due []Ref) []*target
 // fetchTargets makes the clone hold every commit that the targets name and points the local refs at them.
 // It returns true when the clone must be deleted and the batch repeated.
 func (e *Engine) fetchTargets(ctx context.Context, en Entry, clone string, targets []*target, final bool) (retry bool) {
-	var need []string
+	var need, wanted []string
 	local := map[string]string{}
 	for _, t := range targets {
 		if t.commit == "" {
 			continue
 		}
 		local[t.git] = t.commit
-		if !e.git.hasCommit(ctx, clone, t.commit) {
-			need = append(need, t.commit)
+		wanted = append(wanted, t.commit)
+	}
+	if len(wanted) > 0 {
+		r, err := e.git.openReader(ctx, clone)
+		var have []string
+		if err == nil {
+			have = r.commitsOf(wanted)
+			r.close()
+		}
+		for i, sha := range wanted {
+			if have == nil || have[i] == "" {
+				need = append(need, sha)
+			}
 		}
 	}
 	if len(need) > 0 {

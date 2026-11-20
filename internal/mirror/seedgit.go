@@ -57,26 +57,28 @@ func (g *gitRunner) listObjects(ctx context.Context, clone, in string, max int) 
 
 // fitsPush reports whether the objects that tip reaches and no commit of not reaches fit in one push: at most
 // maxObjects objects, maxPacked packed bytes and maxInflated bytes of whole objects. It lists the objects once and
-// reads both sizes of each object in one cat-file process.
-func (g *gitRunner) fitsPush(ctx context.Context, clone, tip string, not []string, maxObjects int, maxPacked, maxInflated int64) (bool, error) {
+// reads both sizes of each object through the sizer process.
+func (g *gitRunner) fitsPush(ctx context.Context, sizer *objReader, clone, tip string, not []string, maxObjects int, maxPacked, maxInflated int64) (bool, error) {
 	list, over, err := g.listObjects(ctx, clone, revRange(tip, not), maxObjects)
 	if err != nil || over {
 		return false, err
 	}
-	var names strings.Builder
+	var shas []string
 	for line := range strings.Lines(list) {
 		sha, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-		names.WriteString(sha + "\n")
+		shas = append(shas, sha)
 	}
-	sizes, err := g.runIn(ctx, clone, gitCreds{}, names.String(), "cat-file", "--batch-check=%(objectsize) %(objectsize:disk)")
+	sizes, err := sizer.ask(shas)
 	if err != nil {
 		return false, err
 	}
 	var inflated, packed int64
-	for line := range strings.Lines(sizes) {
-		whole, disk, _ := strings.Cut(strings.TrimSpace(line), " ")
-		n, _ := strconv.ParseInt(whole, 10, 64)
-		d, _ := strconv.ParseInt(disk, 10, 64)
+	for _, line := range sizes {
+		var n, d int64
+		if f := strings.Fields(line); len(f) == 4 {
+			n, _ = strconv.ParseInt(f[2], 10, 64)
+			d, _ = strconv.ParseInt(f[3], 10, 64)
+		}
 		inflated, packed = inflated+n, packed+d
 	}
 	return packed <= maxPacked && inflated <= maxInflated, nil
@@ -89,15 +91,6 @@ func (g *gitRunner) firstParents(ctx context.Context, clone, tip string, not []s
 		return nil, err
 	}
 	return strings.Fields(out), nil
-}
-
-// peel returns the commit that sha names, or empty when sha is no commit and no tag of a commit.
-func (g *gitRunner) peel(ctx context.Context, clone, sha string) string {
-	out, err := g.run(ctx, clone, gitCreds{}, "rev-parse", "--verify", "-q", sha+"^{commit}")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
 }
 
 type seedTip struct {
