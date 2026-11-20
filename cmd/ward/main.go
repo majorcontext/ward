@@ -43,8 +43,15 @@ func main() {
 		stop()
 		os.Exit(code)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "check" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		code := runLocalCheck(ctx, os.Args[2:], time.Now, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version | land [--ref REF] [--delete-branch] REPO BRANCH]")
+		fmt.Fprintln(os.Stderr, "usage: ward [version | land [--ref REF] [--delete-branch] REPO BRANCH | check [--dir PATH] [--only NAME]]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
