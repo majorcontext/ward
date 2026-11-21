@@ -1,4 +1,5 @@
 # Time budgets for go test, read by internal/testtime.
+# CI enforces them in its reference environment. The land check runs the tests for pass or fail only.
 #   leaf SECONDS                  a test that has no subtests
 #   package PATH|default SECONDS  wall time of one package, run alone (go test -p 1); PATH@JOB sets it for one job
 #   test PATH NAME SECONDS        tests of PATH whose name starts with NAME

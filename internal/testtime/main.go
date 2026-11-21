@@ -1,6 +1,7 @@
 // Command testtime reads the output of go test -json on standard input, prints
 // the readable test log, and fails when a test or a package is slower than the
-// budget of testdata/test-time-budget.txt. Run it from the repository root.
+// budget of testdata/test-time-budget.txt. Run it from the repository root. CI
+// runs it in the reference environment; the land check does not run it.
 // Feed it the output of go test -p 1, which runs one package at a time: a package
 // time is then the cost of the package and not its share of a busy machine.
 package main
