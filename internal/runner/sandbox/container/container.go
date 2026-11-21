@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -52,7 +53,12 @@ type Config struct {
 }
 
 // Sandbox is the engine-backed implementation.
-type Sandbox struct{ cfg Config }
+type Sandbox struct {
+	cfg Config
+	// keepID maps the uid of the runner to itself in the container. Rootless podman otherwise maps it to root and puts
+	// --user in a subordinate range, so the check cannot write the bind mounts that the runner owns.
+	keepID bool
+}
 
 var _ sandbox.Sandbox = (*Sandbox)(nil)
 
@@ -67,6 +73,7 @@ func New(cfg Config) (*Sandbox, error) {
 	if cfg.Network == "" {
 		cfg.Network = "none"
 	}
+	keepID := filepath.Base(cfg.Engine) == "podman" && cfg.User == "" && os.Getuid() != 0
 	if cfg.User == "" {
 		cfg.User = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 		if os.Getuid() == 0 {
@@ -79,7 +86,7 @@ func New(cfg Config) (*Sandbox, error) {
 	if cfg.PidsLimit == 0 {
 		cfg.PidsLimit = 1024
 	}
-	return &Sandbox{cfg: cfg}, nil
+	return &Sandbox{cfg: cfg, keepID: keepID}, nil
 }
 
 func (s *Sandbox) args(name string, spec sandbox.Spec) []string {
@@ -97,6 +104,9 @@ func (s *Sandbox) args(name string, spec sandbox.Spec) []string {
 		for _, e := range sandbox.CacheEnv(sandbox.CacheMount) {
 			a = append(a, "-e", e)
 		}
+	}
+	if s.keepID {
+		a = append(a, "--userns", "keep-id")
 	}
 	if s.cfg.Runtime != "" {
 		a = append(a, "--runtime", s.cfg.Runtime)

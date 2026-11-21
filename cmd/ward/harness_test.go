@@ -513,6 +513,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 			if err := <-done; err != nil {
 				h.t.Errorf("ward stopped with %v", err)
 			}
+			http.DefaultClient.CloseIdleConnections()
 		})
 	}
 	h.t.Cleanup(p.stop)

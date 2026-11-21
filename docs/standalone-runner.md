@@ -35,7 +35,7 @@ The runner reports its sandbox in each poll. ward refuses a runner whose sandbox
 
 A runner lives on any Linux host that provides these. Provisioning stays outside ward: use any provider, a module of your own, cloud-init, or a machine that you built by hand.
 
-- A container engine (`docker` or `podman`).
+- A container engine (`docker` or `podman`). With rootless `podman` the runner passes `--userns keep-id`, so the check runs as the uid of the runner and can write its work and cache directories.
 - `runsc` registered as a runtime of the engine, and `/dev/kvm` usable by the service user.
 - A cache directory and a work directory on local disk. Not a network file system, not `tmpfs`.
 - Outbound HTTPS to ward and to motte.
