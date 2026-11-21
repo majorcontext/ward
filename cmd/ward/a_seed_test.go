@@ -90,7 +90,7 @@ func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 	}
 
 	p.stop()
-	gitIn(t, h.remote.dir, "update-ref", "refs/heads/feature/late", h.remote.tip("refs/heads/main"))
+	h.remote.setRef("refs/heads/feature/late", h.remote.tip("refs/heads/main"))
 	p = h.startWard(wardOpts{refs: seedRefs, seed: true})
 	h.skip()
 	h.git("fetch", "-q", "origin", "main")

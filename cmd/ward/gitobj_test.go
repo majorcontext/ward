@@ -2,14 +2,10 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"compress/zlib"
 	"crypto/sha1"
 	"fmt"
-	"net/http"
 	"os"
-	"os/exec"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -180,53 +176,4 @@ func (h *harness) swap(ref, commit string) {
 	if _, err := mc.SwapRef(h.t.Context(), ref, gen, commit); err != nil {
 		h.t.Fatal(err)
 	}
-}
-
-// serveGit answers the smart HTTP protocol of git by running the service of git for the request. It starts one
-// process for a request where git http-backend starts two.
-func (r *remote) serveGit(w http.ResponseWriter, req *http.Request) {
-	svc := req.URL.Query().Get("service")
-	advertise := req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/info/refs")
-	if !advertise {
-		svc = path.Base(req.URL.Path)
-	}
-	if svc != "git-upload-pack" && svc != "git-receive-pack" {
-		http.NotFound(w, req)
-		return
-	}
-	args := []string{strings.TrimPrefix(svc, "git-"), "--stateless-rpc"}
-	if advertise {
-		args = append(args, "--advertise-refs")
-	}
-	cmd := exec.CommandContext(req.Context(), "git", append(args, r.dir)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_PROTOCOL="+req.Header.Get("Git-Protocol"))
-	body := req.Body
-	if req.Header.Get("Content-Encoding") == "gzip" {
-		zr, err := gzip.NewReader(req.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		body = zr
-	}
-	if !advertise {
-		cmd.Stdin = body
-	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	kind := "result"
-	if advertise {
-		kind = "advertisement"
-	}
-	w.Header().Set("Content-Type", "application/x-"+svc+"-"+kind)
-	w.Header().Set("Cache-Control", "no-cache")
-	if advertise && !strings.Contains(req.Header.Get("Git-Protocol"), "version=2") {
-		head := fmt.Sprintf("# service=%s\n", svc)
-		_, _ = fmt.Fprintf(w, "%04x%s0000", len(head)+4, head)
-	}
-	_, _ = w.Write(out.Bytes())
 }

@@ -59,7 +59,7 @@ func gitIn(t testing.TB, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// remote is a bare repository served by git http-backend behind HTTP Basic.
+// remote is a bare repository served by the test process behind HTTP Basic.
 type remote struct {
 	t    testing.TB
 	dir  string
@@ -68,6 +68,12 @@ type remote struct {
 	pass atomicString
 	user string
 	gate atomic.Pointer[gate]
+
+	mu      sync.Mutex
+	pushes  []string
+	refuse  map[string]bool
+	orphans int
+	logging bool
 }
 
 // gate holds the ls-remote requests of the remote until release is closed.
@@ -131,35 +137,56 @@ func (r *remote) tip(ref string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func (r *remote) setRef(ref, commit string) { gitIn(r.t, r.dir, "update-ref", ref, commit) }
+func (r *remote) setRef(ref, commit string) {
+	if err := writeRef(r.dir, ref, commit); err != nil {
+		r.t.Fatal(err)
+	}
+}
 
 // orphan makes a commit that no motte ref holds.
 func (r *remote) orphan() string {
-	tree := gitIn(r.t, r.dir, "hash-object", "-t", "tree", "-w", "--stdin")
-	return gitIn(r.t, r.dir, "commit-tree", tree, "-m", "outside")
+	empty := newObj("tree", nil)
+	r.mu.Lock()
+	r.orphans++
+	n := r.orphans
+	r.mu.Unlock()
+	c := newObj("commit", fmt.Appendf(nil, "tree %s\nauthor a <a@example.com> %[2]d +0000\ncommitter a <a@example.com> %[2]d +0000\n\noutside\n", empty.id, n))
+	if err := writeLoose(r.dir, []gitObj{empty, c}); err != nil {
+		r.t.Fatal(err)
+	}
+	return c.id
+}
+
+func (r *remote) deleteRef(ref string) {
+	if err := os.Remove(filepath.Join(r.dir, ref)); err != nil {
+		r.t.Fatal(err)
+	}
 }
 
 func (r *remote) rejectRef(ref string) {
-	hook := fmt.Sprintf("#!/bin/sh\nwhile read old new name; do [ \"$name\" = %q ] && { echo refused >&2; exit 1; }; done\nexit 0\n", ref)
-	if err := os.WriteFile(filepath.Join(r.dir, "hooks", "pre-receive"), []byte(hook), 0o755); err != nil {
-		r.t.Fatal(err)
-	}
+	r.mu.Lock()
+	r.refuse = map[string]bool{ref: true}
+	r.mu.Unlock()
 }
 
-// logPushes makes the remote append each ref update to a file. pushLog returns that file.
+// logPushes makes the remote record each ref update. pushLog returns the record.
 func (r *remote) logPushes() {
-	hook := fmt.Sprintf("#!/bin/sh\ncat >> %q\n", filepath.Join(r.dir, "pushes.log"))
-	if err := os.WriteFile(filepath.Join(r.dir, "hooks", "pre-receive"), []byte(hook), 0o755); err != nil {
-		r.t.Fatal(err)
-	}
+	r.mu.Lock()
+	r.logging = true
+	r.mu.Unlock()
 }
 
 func (r *remote) pushLog() string {
-	out, _ := os.ReadFile(filepath.Join(r.dir, "pushes.log"))
-	return string(out)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.pushes, "")
 }
 
-func (r *remote) allowAll() { _ = os.Remove(filepath.Join(r.dir, "hooks", "pre-receive")) }
+func (r *remote) allowAll() {
+	r.mu.Lock()
+	r.refuse = nil
+	r.mu.Unlock()
+}
 
 type harness struct {
 	t        *testing.T

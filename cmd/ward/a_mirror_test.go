@@ -78,7 +78,7 @@ func TestMirrorFollowsRefsThroughTheirLife(t *testing.T) {
 	h.push("feature/b", c3, false)
 	h.relay(p)
 	h.waitTip("feature/b", c3)
-	gitIn(t, h.remote.dir, "update-ref", "-d", "refs/heads/feature/b")
+	h.remote.deleteRef("refs/heads/feature/b")
 	n := h.count("reconcile")
 	if code, _ := p.do("POST", "/v1/mirrors/"+mirrorName+"/reconcile", h.token(token.ScopeOperator, ""), nil, nil); code != http.StatusAccepted {
 		t.Fatalf("reconcile answered %d", code)
