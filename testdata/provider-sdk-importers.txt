@@ -1,0 +1,2 @@
+# Packages that import a provider SDK and are neither an implementation package of a seam nor under cmd/.
+# One package directory per line with a reason. internal/seams fails an entry that no package needs.

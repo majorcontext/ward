@@ -425,6 +425,23 @@ The image `ghcr.io/majorcontext/ward` is built from `images/ward/Dockerfile`: a 
 
 The chart `charts/ward` runs one replica with the strategy `Recreate`, because the SQLite state store has a single writer. A PersistentVolumeClaim holds `WARD_DATA_DIR`. The chart mounts the motte signing key, the hook secret and the credential of each mirror (a token file, or a GitHub App key) as files from Kubernetes Secrets. `WARD_MIRRORS` comes from the values. Liveness uses `/health` and readiness uses `/ready`. The CI job `chart` lints the chart and renders it with each file of `charts/ward/ci/`.
 
+## Provider seams
+
+Every external provider sits behind an interface that its consumer owns. A provider is a database, an object store, a forge, a cloud API or a remote credential source. A seam has a conformance suite that every implementation runs, and at least two implementations: a local or in-memory implementation counts. The table lists each seam. `internal/seams` checks the table against the code in CI.
+
+| Seam | Interface | Suite | Implementations | Gap |
+|---|---|---|---|---|
+| mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
+| mirror-remote-credential | none — the GitHub App exchange is a concrete type in `internal/mirror` | none — no interface exists yet | none | No interface. Only the GitHub App credential and the password file exist. |
+
+- A cell that names Go code is `dir.Identifier`: the directory is relative to the module root.
+- A seam that meets the rule has an interface, a suite and at least two implementations. A seam that does not has a reason in the Gap column, and its name is a line of `testdata/seam-gaps.txt`. The list only shrinks: CI fails a gap that the merge base does not list.
+- A package under the directory of the interface (the suite excepted), or a package that holds `var _ pkg.Interface = ...`, is an implementation. The table must list it.
+- Each implementation has a test that calls the suite function.
+- Only an implementation package, a package under `cmd/`, or a package in `testdata/provider-sdk-importers.txt` imports a provider SDK. The SDK prefixes are in `internal/seams/providers.go`.
+- A provider host name (`ghcr.io`, `github.com`, `api.github.com`, `googleapis.com`, `amazonaws.com`, `r2.cloudflarestorage.com`) appears only in a Go string literal or a YAML file of `.github` or `charts` that `testdata/provider-hosts.txt` lists. The module path and import paths are not literals for this rule.
+- A change to a seam updates the table in the same diff.
+
 ## Planned work
 
 Nothing in this section is built. Each paragraph names the intent and the motte mechanism that it uses.

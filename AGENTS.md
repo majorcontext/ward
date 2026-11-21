@@ -22,6 +22,16 @@ The CI job `leak` runs `internal/leaklint` against the secret `LEAK_DENYLIST`. T
 - Run Go tests with `-race`.
 - A test is at most 10 s and a package at most 10 s, unless `testdata/test-time-budget.txt` says more. Make a slow test fast; raise a budget only with a stated reason in the same change. `internal/testtime` enforces the budget in CI only, in its reference environment, where each package runs alone (`go test -p 1`) and a package time is its own cost. The land check `test` runs every test with `-race` and checks correctness, not time.
 
+## Provider seams
+
+- Put each external provider behind an interface that the consumer owns. See `docs/architecture.md` "Provider seams".
+- Give each seam a conformance suite that every implementation runs, and at least two implementations. A local or in-memory implementation counts.
+- Import a provider SDK only in an implementation package or under `cmd/`.
+- Name a provider host only in a file of `testdata/provider-hosts.txt`.
+- Update the seams table in the same diff as a change to a seam.
+- A seam that does not meet the rule is a gap row in the table and a line of `testdata/seam-gaps.txt`. The list only shrinks.
+- `internal/seams` enforces these rules in `go test`.
+
 ## Comments
 
 Write no comment by default. A comment states why: a constraint, a hazard, or a rejected alternative. It never restates the code. It carries no history, no date, no person, no pull request number and no path to justify the code.

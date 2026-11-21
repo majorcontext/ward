@@ -1,0 +1,4 @@
+# Seams of docs/architecture.md "Provider seams" that miss the rule, one seam name per line with the reason.
+# The list only shrinks: internal/seams compares it with the gap rows of the table and with its merge-base copy.
+mirror-store # one implementation (sqlite) and no conformance suite
+mirror-remote-credential # no interface: the GitHub App exchange is a concrete type in internal/mirror
