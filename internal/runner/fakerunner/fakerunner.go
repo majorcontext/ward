@@ -3,6 +3,7 @@
 package fakerunner
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/majorcontext/ward/internal/procgroup"
 	"github.com/majorcontext/ward/runnerproto"
 )
 
@@ -40,10 +42,13 @@ func (r Runner) ServeHTTP(w http.ResponseWriter, hr *http.Request) {
 func (r Runner) run(req runnerproto.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(req.Check.TimeoutSeconds)*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, req.Check.Run[0], req.Check.Run[1:]...).CombinedOutput()
+	var out bytes.Buffer
+	cmd := exec.Command(req.Check.Run[0], req.Check.Run[1:]...)
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := procgroup.Run(ctx, cmd, nil)
 	res := runnerproto.Result{RequestID: req.RequestID, Status: runnerproto.Pass, Summary: "ok"}
 	if err != nil {
-		res.Status, res.Summary = runnerproto.Fail, "failed: "+err.Error()+"\n"+string(out)
+		res.Status, res.Summary = runnerproto.Fail, "failed: "+err.Error()+"\n"+out.String()
 	}
 	tok, err := runnerproto.MintCheckToken(r.Kid, r.Key, req.Repo, "fakerunner", time.Now().Add(time.Minute))
 	if err == nil {
