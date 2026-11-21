@@ -163,7 +163,16 @@ func (r *remote) deleteRef(ref string) {
 	}
 }
 
+func (r *remote) writeHook(script string) {
+	if err := os.WriteFile(filepath.Join(r.dir, "hooks", "pre-receive"), []byte(script), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// rejectRef makes the remote refuse every push that names ref. A file remote runs the hook, and the HTTP server of the
+// remote checks the same set.
 func (r *remote) rejectRef(ref string) {
+	r.writeHook(fmt.Sprintf("#!/bin/sh\nwhile read old new name; do [ \"$name\" = %q ] && { echo refused >&2; exit 1; }; done\nexit 0\n", ref))
 	r.mu.Lock()
 	r.refuse = map[string]bool{ref: true}
 	r.mu.Unlock()
@@ -171,18 +180,21 @@ func (r *remote) rejectRef(ref string) {
 
 // logPushes makes the remote record each ref update. pushLog returns the record.
 func (r *remote) logPushes() {
+	r.writeHook(fmt.Sprintf("#!/bin/sh\ncat >> %q\n", filepath.Join(r.dir, "pushes.log")))
 	r.mu.Lock()
 	r.logging = true
 	r.mu.Unlock()
 }
 
 func (r *remote) pushLog() string {
+	out, _ := os.ReadFile(filepath.Join(r.dir, "pushes.log"))
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return strings.Join(r.pushes, "")
+	return string(out) + strings.Join(r.pushes, "")
 }
 
 func (r *remote) allowAll() {
+	_ = os.Remove(filepath.Join(r.dir, "hooks", "pre-receive"))
 	r.mu.Lock()
 	r.refuse = nil
 	r.mu.Unlock()
@@ -204,6 +216,10 @@ type harness struct {
 	callerSK ed25519.PrivateKey
 	callerPK ed25519.PublicKey
 	hist     history
+
+	// http makes the mirror reach the remote over HTTP, which a test needs for the transport, the credential or a held request.
+	// Any other test reaches the remote as a file URL, which starts no helper for HTTP.
+	http bool
 
 	started    bool
 	ln         *net.TCPListener
@@ -473,7 +489,10 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	}
 	adjust := func(c *config.Config) {
 		if len(c.Mirror.Mirrors) > 0 {
-			c.Mirror.Mirrors[0].Remote = h.remote.URL
+			c.Mirror.Mirrors[0].Remote = "file://" + h.remote.dir
+			if h.http || o.app != nil || o.relative {
+				c.Mirror.Mirrors[0].Remote = h.remote.URL
+			}
 		}
 		c.Mirror.Askpass = askpassBin
 		c.Land.ReadBudget = o.readBudget

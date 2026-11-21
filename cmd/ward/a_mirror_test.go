@@ -170,6 +170,7 @@ func TestMirrorReceiverRefusesForgeriesIgnoresRepeatsAndUnmatchedRefsAndKeepsOrd
 
 func TestMirrorReportsRemoteFailuresAndRecovers(t *testing.T) {
 	h := newHarness(t)
+	h.http = true
 	h.remote.rejectRef("refs/heads/feature/bad")
 	p := h.startWard(wardOpts{})
 	h.skip()
@@ -248,6 +249,7 @@ func TestMirrorNeverTouchesRefsThatNoPatternMatchesAnyMore(t *testing.T) {
 
 func TestMirrorRunsAnotherReconcileWhenOneIsRequestedDuringAPass(t *testing.T) {
 	h := newHarness(t)
+	h.http = true
 	p := h.startWard(wardOpts{})
 	op := h.token(token.ScopeOperator, "")
 	n := h.count("reconcile")

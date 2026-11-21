@@ -74,6 +74,7 @@ func (h *harness) wantSeeded() {
 
 func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 	h := newHarness(t)
+	h.http = true
 	h.fillRemote(2, 0)
 	hold, release := h.remote.hold()
 	p := h.startWard(wardOpts{refs: seedRefs, seed: true, noWait: true})
