@@ -6,8 +6,8 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/identity/usertoken"
-	"github.com/majorcontext/ward/internal/identity/usertoken/usertokentest"
 	"github.com/majorcontext/ward/internal/mirror/sqlite"
+	"github.com/majorcontext/ward/internal/usertokentest"
 )
 
 func TestOpenRequestOpensNothingForAKeyThatAlreadyHasAPass(t *testing.T) {

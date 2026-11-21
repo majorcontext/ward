@@ -7,7 +7,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/identity/identitytest"
 	"github.com/majorcontext/ward/internal/identity/usertoken"
-	"github.com/majorcontext/ward/internal/identity/usertoken/usertokentest"
+	"github.com/majorcontext/ward/internal/usertokentest"
 )
 
 func TestConformance(t *testing.T) {

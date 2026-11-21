@@ -125,15 +125,6 @@ Per-user tokens (`internal/identity/usertoken`). They need no issuer. An operato
 
 The local loop of a person needs no identity provider, no tunnel and no box: an operator token, `ward token create`, plain `git` with the token as the password, `ward check` and `ward land` (see README, Developing ward). ward serves TLS itself when `WARD_TLS_CERT` and `WARD_TLS_KEY` are set, and no code assumes a proxy or a tunnel.
 
-## Provider seams
-
-| Seam | Interface | Suite | Implementations | Gap |
-|---|---|---|---|---|
-| identity | `internal/identity.Authenticator` | `internal/identity/identitytest.Run` | `internal/identity/bearer`, `internal/identity/oidc`, `internal/identity/usertoken` | |
-| user token store | `internal/identity/usertoken.Store` | `internal/identity/usertoken/usertokentest.Run` | `internal/mirror/sqlite`, `usertokentest.Mem` | |
-
-The suite `identitytest.Run` has an optional Revoked case for a credential that can be revoked. The header, the claim and the key set address of an issuer are configuration, and a vendor host name appears only in documents.
-
 ## Errors
 
 The error body is `{"error":{"code","message","details"}}`. Codes: `unauthorized` (401), `forbidden` (403), `not_found` (404), `invalid_body` (400), `method_not_allowed` (405), `internal_error` (500), `land_conflict` (409, with `details.paths`), `land_invalid` (400) and `land_timeout` (504). A land that fails in the queue carries one of these codes, or `check_failed` or `land_stale`, in its `error` (see Land). A panic in a handler is logged with its stack and answers 500 `internal_error` when the handler sent no status yet.
@@ -501,6 +492,8 @@ Every external provider sits behind an interface that its consumer owns. A provi
 
 | Seam | Interface | Suite | Implementations | Gap |
 |---|---|---|---|---|
+| identity | `internal/identity.Authenticator` | `internal/identity/identitytest.Run` | `internal/identity/bearer`, `internal/identity/oidc`, `internal/identity/usertoken` | |
+| user-token-store | `internal/identity/usertoken.Store` | `internal/usertokentest.Run` | `internal/mirror/sqlite`, `internal/usertokentest` | |
 | check-store | `internal/check.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
 | land-store | `internal/land.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
 | runner-sandbox | `internal/runner/sandbox.Sandbox` | `internal/runner/sandbox/sandboxtest.Run` | `internal/runner/sandbox/container`, `internal/runner/sandbox/gvisor`, `internal/runner/sandbox/fake` | |
@@ -518,6 +511,8 @@ Every external provider sits behind an interface that its consumer owns. A provi
 - Only an implementation package, a package under `cmd/`, or a package in `testdata/provider-sdk-importers.txt` imports a provider SDK. The SDK prefixes are in `internal/seams/providers.go`.
 - A provider host name (`ghcr.io`, `github.com`, `api.github.com`, `googleapis.com`, `amazonaws.com`, `r2.cloudflarestorage.com`) appears only in a Go string literal or a YAML file of `.github` or `charts` that `testdata/provider-hosts.txt` lists. The module path and import paths are not literals for this rule.
 - A change to a seam updates the table in the same diff.
+
+The suite `identitytest.Run` has an optional Revoked case for a credential that can be revoked. The header, the claim and the key set address of an issuer are configuration, and a vendor host name appears only in documents.
 
 ## Planned work
 
