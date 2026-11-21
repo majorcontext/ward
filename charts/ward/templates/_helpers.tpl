@@ -51,3 +51,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- toJson $out -}}
 {{- end -}}
+
+{{/* The runner selector differs from the ward selector, so the Service of ward never routes to a runner pod. */}}
+{{- define "ward.runner.selector" -}}
+app.kubernetes.io/name: ward-runner
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "ward.runner.labels" -}}
+{{ include "ward.runner.selector" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end -}}

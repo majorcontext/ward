@@ -3,14 +3,13 @@ package check
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
 
+	"github.com/majorcontext/ward/runnerproto"
 	"github.com/tailscale/hujson"
 )
 
@@ -24,21 +23,7 @@ const (
 var nameRE = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 
 // Check is one required check. The runner runs Run at the root of the tree.
-type Check struct {
-	Name           string   `json:"name"`
-	Run            []string `json:"run"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
-}
-
-// Hash is the SHA-256, in lowercase hex, of the compact JSON object of the check.
-func (c Check) Hash() string {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(c)
-	sum := sha256.Sum256(bytes.TrimRight(b.Bytes(), "\n"))
-	return hex.EncodeToString(sum[:])
-}
+type Check = runnerproto.Check
 
 type rawCheck struct {
 	Name           string          `json:"name"`

@@ -84,3 +84,39 @@ podAnnotations: {}
 
 # extraEnv adds environment variables to the container, such as GIT_SSL_CAINFO.
 extraEnv: []
+
+# runner deploys `ward runner`, a check runner that runs each check in a sandbox next to ward. It is off by default.
+# Ward reaches it at http://RELEASE-runner:PORT/v1/checks: put that URL in an entry of runners, with the same secret.
+runner:
+  enabled: false
+  # image must hold ward and a container engine, such as the image of images/ward-runner/Dockerfile.
+  image:
+    repository: ""
+    tag: ""
+    digest: ""
+  listenPort: 8081
+  # wardUrl defaults to the Service of this release.
+  wardUrl: ""
+  # hookSecret names the existing Secret that holds the key that signs the check requests. It is the secret of the runners entry.
+  hookSecret: {name: "", key: secret}
+  # checkKey names the existing Secret that holds the base64 Ed25519 private key that signs check tokens. Its public key
+  # goes in trustedKeys with the kid below and the scope check.
+  checkKey: {kid: "", name: "", key: key}
+  # motte names the Secret that holds a read grant of motte for the repositories to check.
+  motte: {url: "", grantSecret: {name: "", key: grant}}
+  # sandbox is auto, gvisor or container. auto picks gvisor when runsc is on the path.
+  sandbox: auto
+  engine: podman
+  # sandboxImage is the OCI image in which each check runs.
+  sandboxImage: ""
+  network: none
+  memory: 4g
+  concurrency: 1
+  runtimeClassName: ""
+  # privileged lets a container engine run inside the pod. Without it, mount an engine socket with extraVolumes.
+  privileged: false
+  workDirSize: 10Gi
+  resources: {}
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []

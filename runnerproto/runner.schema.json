@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ward check runner protocol",
+  "description": "ward POSTs a Request to the hook URL of a runner with the header Ward-Signature: sha256=<hex HMAC-SHA256 of the exact body bytes under the shared secret>. A 2xx answer accepts the request. The runner later POSTs a Result to <ward>/v1/results with the header Authorization: Bearer <check token>. A check token is wd1.<base64url payload>.<base64url Ed25519 signature>, with the claims kid, scope=check, repo and exp.",
+  "$defs": {
+    "Check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "run", "timeout_seconds"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9-]{1,40}$"},
+        "run": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "The argument vector. The runner runs it at the root of the tree."},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+      }
+    },
+    "Request": {
+      "type": "object",
+      "required": ["request_id", "repo", "tree", "commit", "check", "check_hash", "env"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "repo": {"type": "string", "minLength": 1},
+        "tree": {"type": "string", "description": "Git tree ID."},
+        "commit": {"type": "string", "description": "A commit of motte whose tree is tree."},
+        "check": {"$ref": "#/$defs/Check"},
+        "check_hash": {"type": "string", "description": "Lowercase hex SHA-256 of the compact JSON object of check, in the key order name, run, timeout_seconds, with no HTML escaping."},
+        "env": {"type": "string", "description": "The env text of the runner entry. May be empty."}
+      }
+    },
+    "Result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "status", "summary", "log_url"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["pass", "fail"]},
+        "summary": {"type": "string", "maxLength": 4096, "description": "At most 4096 bytes."},
+        "log_url": {"type": "string", "description": "At most 2048 bytes. May be empty."}
+      }
+    }
+  }
+}

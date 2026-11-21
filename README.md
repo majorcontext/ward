@@ -8,6 +8,19 @@ Read `docs/architecture.md` for the design. Read `AGENTS.md` before you change t
 
 License: MIT.
 
+## Running checks
+
+ward never runs a check. A runner does, and ward needs one runner for each repository that has a `.ward/checks.json`. Two kinds work, and both speak the protocol of the Go package `runnerproto` (JSON schema: `runnerproto/runner.schema.json`).
+
+| | External runner | `ward runner` |
+|---|---|---|
+| What it is | A service that you already have, or write: it receives a signed check request and posts a result. | A process of this repository. It fetches the exact tree from motte and runs each check in a sandbox. |
+| Setup | An entry in `WARD_RUNNERS` (`repo`, `url`, `secret_file`, `env`). | The same entry, with the `url` of the runner, plus the environment of `ward runner`. |
+| Sandbox | Its own. | A container through any OCI engine (docker, podman), under gVisor (`runsc`) when it is on the path. |
+| Needs | Whatever the service needs. | A container engine, a read grant of motte and a check key that ward trusts. |
+
+No specific vendor is required for either. A runner of another author can test itself with `runnerproto/runnertest`. See `docs/standalone-runner.md` to run `ward runner` on Kubernetes (the chart value `runner.enabled`) or on a Linux machine. The wire and the variables are in `docs/architecture.md`, Runner protocol and Standalone runner.
+
 ## Developing ward
 
 ward lands its own changes through ward. The file `.ward/checks.json` lists the required checks: `build-vet`, `lint`, `test` and `gofmt`. The GitHub jobs `chart` and `leak` stay outside it: `chart` needs `helm`, which a check environment does not guarantee, and `leak` needs the secret `LEAK_DENYLIST`, which a check must never receive.

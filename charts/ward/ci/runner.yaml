@@ -1,0 +1,14 @@
+image:
+  tag: v0.0.0
+motte:
+  url: http://motte.example
+  kid: ward
+  keySecret:
+    name: ward-motte-key
+runner:
+  enabled: true
+  image: {repository: registry.example/ward-runner, tag: v0.0.0}
+  hookSecret: {name: runner-hook}
+  checkKey: {kid: runner, name: runner-key}
+  motte: {url: http://motte.example, grantSecret: {name: runner-grant}}
+  sandboxImage: registry.example/check-env@sha256:2222222222222222222222222222222222222222222222222222222222222222

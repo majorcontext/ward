@@ -3,14 +3,16 @@ package check
 import (
 	"context"
 	"time"
+
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 // Status is the outcome that a runner reports.
-type Status string
+type Status = runnerproto.Status
 
 const (
-	StatusPass Status = "pass"
-	StatusFail Status = "fail"
+	StatusPass = runnerproto.Pass
+	StatusFail = runnerproto.Fail
 )
 
 // Request is one check request to a runner. It is open until a result or a newer request for its key ends it.

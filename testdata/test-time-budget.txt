@@ -8,3 +8,6 @@
 
 leaf 10
 package default 10
+# The container and gvisor suites start a container for each case and pull the test image once. A run of the two takes a few seconds with a warm image.
+package github.com/majorcontext/ward/internal/runner/sandbox/container 40
+package github.com/majorcontext/ward/internal/runner/sandbox/gvisor 40

@@ -64,8 +64,15 @@ func main() {
 		stop()
 		os.Exit(code)
 	}
+	if len(os.Args) == 2 && os.Args[1] == "runner" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		code := runRunner(ctx, os.Getenv, nil, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]")
+		fmt.Fprintln(os.Stderr, "usage: ward [version | runner | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

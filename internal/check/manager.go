@@ -3,9 +3,7 @@ package check
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,14 +13,13 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 const (
-	maxSummary    = 4096
-	maxLogURL     = 2048
-	resendMargin  = 10 * time.Minute
-	postTimeout   = 30 * time.Second
-	signatureName = "Ward-Signature"
+	resendMargin = 10 * time.Minute
+	postTimeout  = 30 * time.Second
 )
 
 var (
@@ -51,22 +48,7 @@ type Verdict struct {
 }
 
 // Posted is the body that a runner posts.
-type Posted struct {
-	RequestID string `json:"request_id"`
-	Status    Status `json:"status"`
-	Summary   string `json:"summary"`
-	LogURL    string `json:"log_url"`
-}
-
-type wireRequest struct {
-	RequestID string `json:"request_id"`
-	Repo      string `json:"repo"`
-	Tree      string `json:"tree"`
-	Commit    string `json:"commit"`
-	Check     Check  `json:"check"`
-	CheckHash string `json:"check_hash"`
-	Env       string `json:"env"`
-}
+type Posted = runnerproto.Result
 
 // Manager keeps the results and sends the check requests. It has no poll: a result wakes the waiters.
 type Manager struct {
@@ -194,7 +176,7 @@ func (m *Manager) Ensure(ctx context.Context, repo, tree, commit string, c Check
 
 // Post records a result that a runner posted for a repository. A second result for a request changes nothing.
 func (m *Manager) Post(ctx context.Context, repo string, p Posted) error {
-	if (p.Status != StatusPass && p.Status != StatusFail) || len(p.Summary) > maxSummary || len(p.LogURL) > maxLogURL {
+	if (p.Status != StatusPass && p.Status != StatusFail) || len(p.Summary) > runnerproto.MaxSummary || len(p.LogURL) > runnerproto.MaxLogURL {
 		return ErrInvalid
 	}
 	req, ok, err := m.store.Request(ctx, p.RequestID)
@@ -321,18 +303,16 @@ func (m *Manager) post(ctx context.Context, req Request) error {
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(wireRequest{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env})
+	body, err := json.Marshal(runnerproto.Request{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env})
 	if err != nil {
 		return err
 	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	hr.Header.Set("Content-Type", "application/json")
-	hr.Header.Set(signatureName, "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	hr.Header.Set(runnerproto.SignatureHeader, runnerproto.Sign(secret, body))
 	resp, err := m.http.Do(hr)
 	if err != nil {
 		return err
