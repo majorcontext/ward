@@ -53,6 +53,6 @@ WARD_URL=$WARD_URL WARD_TOKEN=WARD_TOKEN ward land REPO my-change
 
 `ward token list` shows the tokens and `ward token revoke ID` revokes one. `git push` writes a branch and never a protected `main`: only `ward land` lands a branch.
 
-A deployment that trusts an OIDC issuer (`WARD_OIDC_*`) lets you sign in without a token: `WARD_OIDC_ISSUER=ISSUER WARD_OIDC_CLIENT_ID=ID ward login` runs the OAuth device flow and saves the token with mode 0600, and `ward land` uses it. An identity-aware proxy that signs a JWT in its own header, such as Cloudflare Access, is one configuration of the same verifier (see `docs/architecture.md`, Human identity). ward serves TLS itself when `WARD_TLS_CERT` and `WARD_TLS_KEY` are set.
+A deployment that trusts an OIDC issuer (`WARD_OIDC_*`) lets you sign in without a token: `WARD_OIDC_ISSUER=ISSUER WARD_OIDC_CLIENT_ID=ID ward login` runs the OAuth device flow and saves the token with mode 0600, and `ward land` uses it. An identity-aware proxy that signs a JWT in its own header, such as Cloudflare Access, is one configuration of the same verifier (see `docs/architecture.md`, Human identity). Behind such a proxy, `ward land` sends `WARD_ACCESS_TOKEN` in the header `WARD_ACCESS_HEADER` (default `cf-access-token`) and needs no other credential. ward serves TLS itself when `WARD_TLS_CERT` and `WARD_TLS_KEY` are set.
 
 A box that runs the same commands is an optional place to work. The local loop needs no box.
