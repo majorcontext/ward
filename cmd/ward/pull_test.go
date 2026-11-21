@@ -63,3 +63,31 @@ func TestPullRunnerLeasesACheckAndLandsOnItsResult(t *testing.T) {
 		t.Fatalf("landed = %+v", done)
 	}
 }
+
+func TestRunnerRevokedByARestartCannotRenewOrPostForItsLease(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true, pullKids: []string{"c", "c2"}})
+	base := h.seedChecked(unitChecks)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	l := h.awaitLand(p, h.postLand(p, "main", "feature/x", nil).ID, "checking")
+	_, lease := p.poll("c", runnerproto.IsolationGVisor)
+	renew := func(p *wardProc) int {
+		code, _ := p.do("POST", runnerproto.RenewPath(lease.LeaseID), h.tokenAs("c", token.ScopeRunner, ""), []byte(`{}`), nil)
+		return code
+	}
+	if code := renew(p); code != http.StatusOK {
+		t.Fatalf("renew by the registered runner = %d", code)
+	}
+	p.stop()
+
+	p = h.startWard(wardOpts{noMirror: true, pullKids: []string{"c2"}})
+	if code := renew(p); code != http.StatusForbidden {
+		t.Errorf("renew by a revoked runner = %d, want 403", code)
+	}
+	if code := p.resultAs("c", lease.Request.RequestID); code != http.StatusForbidden {
+		t.Errorf("result of a revoked runner = %d, want 403", code)
+	}
+	if got := h.awaitLand(p, l.ID, "checking"); got.State != "checking" {
+		t.Fatalf("land = %+v", got)
+	}
+}

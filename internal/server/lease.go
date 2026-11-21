@@ -69,6 +69,8 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 	case errors.Is(err, pull.ErrLeaseLost):
 		writeError(w, codeLeaseLost, "the lease ended")
+	case errors.Is(err, pull.ErrUnknownRunner):
+		writeError(w, codeForbidden, "forbidden")
 	default:
 		s.d.Logger.Error("renew lease", "error", err.Error())
 		writeError(w, codeInternal, "internal error")

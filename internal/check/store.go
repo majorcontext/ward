@@ -60,9 +60,9 @@ type Store interface {
 	// Lease gives kid, under leaseID, the oldest open request of one of repos that has no live lease, until the time until.
 	// A lease that passed its time is dead, so its request is leasable again with the same ID.
 	Lease(ctx context.Context, repos []string, kid, leaseID string, now, until time.Time) (Request, bool, error)
-	// RenewLease moves the end of a lease that kid holds. It returns false when the request is closed, when a newer lease
-	// replaced the lease, or when kid does not hold it.
-	RenewLease(ctx context.Context, leaseID, kid string, until time.Time) (bool, error)
+	// RenewLease moves the end of a lease that kid holds. It returns false when the request is closed, when its repository
+	// is not in repos, when a newer lease replaced the lease, or when kid does not hold it.
+	RenewLease(ctx context.Context, leaseID, kid string, repos []string, until time.Time) (bool, error)
 	// Leased reports whether kid has held a lease on the request.
 	Leased(ctx context.Context, requestID, kid string) (bool, error)
 }

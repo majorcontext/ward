@@ -225,11 +225,18 @@ func (s *Store) Lease(ctx context.Context, repos []string, kid, leaseID string, 
 	return out, leased, err
 }
 
-func (s *Store) RenewLease(ctx context.Context, leaseID, kid string, until time.Time) (bool, error) {
+func (s *Store) RenewLease(ctx context.Context, leaseID, kid string, repos []string, until time.Time) (bool, error) {
+	if len(repos) == 0 {
+		return false, nil
+	}
+	args := []any{micro(until), leaseID, kid}
+	for _, r := range repos {
+		args = append(args, r)
+	}
 	res, err := s.db.ExecContext(ctx, `UPDATE check_leases SET until = ? WHERE lease_id = ? AND kid = ?
-		AND EXISTS (SELECT 1 FROM check_requests r WHERE r.id = check_leases.request_id AND r.open = 1)
+		AND EXISTS (SELECT 1 FROM check_requests r WHERE r.id = check_leases.request_id AND r.open = 1 AND r.repo IN (?`+strings.Repeat(`, ?`, len(repos)-1)+`))
 		AND NOT EXISTS (SELECT 1 FROM check_leases n WHERE n.request_id = check_leases.request_id AND n.seq > check_leases.seq)`,
-		micro(until), leaseID, kid)
+		args...)
 	if err != nil {
 		return false, err
 	}

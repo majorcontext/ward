@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -132,9 +133,18 @@ func (q *Queue) Lease(ctx context.Context, kid string, iso runnerproto.Isolation
 	}
 }
 
-// Renew extends the lease leaseID of kid by LeaseTTL from now.
+// Renew extends the lease leaseID of kid by LeaseTTL from now. It refuses a kid that no pull repository registers any more.
 func (q *Queue) Renew(ctx context.Context, kid, leaseID string) (runnerproto.Renewal, error) {
-	ok, err := q.store.RenewLease(ctx, leaseID, kid, q.clock.Now().Add(LeaseTTL))
+	var repos []string
+	for repo, r := range q.runners {
+		if slices.Contains(r.Kids, kid) {
+			repos = append(repos, repo)
+		}
+	}
+	if len(repos) == 0 {
+		return runnerproto.Renewal{}, ErrUnknownRunner
+	}
+	ok, err := q.store.RenewLease(ctx, leaseID, kid, repos, q.clock.Now().Add(LeaseTTL))
 	switch {
 	case err != nil:
 		return runnerproto.Renewal{}, err
