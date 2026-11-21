@@ -56,7 +56,7 @@ type landEnvelope struct {
 }
 
 // credential returns WARD_TOKEN, or a token of scope for repo that it signs with the key file of WARD_KEY_FILE and WARD_KID, or
-// the token that `ward login` saved.
+// the token that `ward login` saved. It returns no token when only WARD_ACCESS_TOKEN is set: the proxy then proves the identity.
 func credential(getenv func(string) string, scope token.Scope, repo string, now time.Time) (string, error) {
 	if tok := getenv("WARD_TOKEN"); tok != "" {
 		return tok, nil
@@ -73,7 +73,20 @@ func credential(getenv func(string) string, scope token.Scope, repo string, now 
 			return t.Value, nil
 		}
 	}
-	return "", errors.New("set WARD_TOKEN, or WARD_KEY_FILE and WARD_KID, or run ward login")
+	if getenv("WARD_ACCESS_TOKEN") != "" {
+		return "", nil
+	}
+	return "", errors.New("set WARD_TOKEN, or WARD_KEY_FILE and WARD_KID, or WARD_ACCESS_TOKEN, or run ward login")
+}
+
+// accessHeader returns the header and value of WARD_ACCESS_TOKEN, the credential of an identity-aware proxy in front of ward.
+// WARD_ACCESS_HEADER names the header. The default cf-access-token is the one that Cloudflare Access reads.
+func accessHeader(getenv func(string) string) (name, value string) {
+	name = getenv("WARD_ACCESS_HEADER")
+	if name == "" {
+		name = "cf-access-token"
+	}
+	return name, getenv("WARD_ACCESS_TOKEN")
 }
 
 // runLand is `ward land [--ref REF] [--delete-branch] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
@@ -93,6 +106,7 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		return 2
 	}
 	c := &landClient{base: strings.TrimRight(getenv("WARD_URL"), "/"), tok: tok}
+	c.accessName, c.accessValue = accessHeader(getenv)
 	body, _ := json.Marshal(map[string]any{"repo": repo, "ref": *ref, "branch": branch, "delete_branch": *del})
 	cur, code := c.call(ctx, http.MethodPost, "/v1/lands", body, stderr)
 	if code != 0 {
@@ -125,8 +139,8 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 // noRedirect never follows a redirect, so a credential header never reaches another origin.
 var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-// landClient sends its token as a bearer token.
-type landClient struct{ base, tok string }
+// landClient sends its token as a bearer token, and the access token in its own header.
+type landClient struct{ base, tok, accessName, accessValue string }
 
 // call sends one request and decodes the land of the answer. A non-zero code is the exit code of a failure that it has reported.
 func (c *landClient) call(ctx context.Context, method, path string, body []byte, stderr io.Writer) (landAnswer, int) {
@@ -137,7 +151,12 @@ func (c *landClient) call(ctx context.Context, method, path string, body []byte,
 		fmt.Fprintln(stderr, "ward land: WARD_URL is not a URL")
 		return landAnswer{}, 2
 	}
-	req.Header.Set("Authorization", "Bearer "+c.tok)
+	if c.tok != "" {
+		req.Header.Set("Authorization", "Bearer "+c.tok)
+	}
+	if c.accessValue != "" {
+		req.Header.Set(c.accessName, c.accessValue)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := noRedirect.Do(req)
 	if err != nil {

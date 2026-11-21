@@ -281,6 +281,24 @@ func TestLandAcceptsAnOIDCIdentityOnItsRepositoryOnly(t *testing.T) {
 	}
 }
 
+func TestLandSendsTheAccessTokenInTheHeaderOfAProxyAndNoBearer(t *testing.T) {
+	iss := identitytest.NewIssuer(t, "k1")
+	jwt := iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": "dev@dev.test", "exp": time.Now().Add(time.Hour).Unix()})
+	for header, env := range map[string]map[string]string{"cf-access-token": {}, "X-Edge-Jwt": {"WARD_ACCESS_HEADER": "X-Edge-Jwt"}} {
+		t.Run(header, func(t *testing.T) {
+			h := newLandHarness(t)
+			p := h.startWard(wardOpts{noMirror: true, oidc: iss, oidcHeader: header})
+			base := h.seedMain()
+			h.branchFrom(base, "feature/x", "c.txt", "c\n")
+			env["WARD_URL"], env["WARD_ACCESS_TOKEN"] = p.URL, jwt
+			var out, errOut bytes.Buffer
+			if code := runLand(t.Context(), []string{h.repo, "feature/x"}, func(k string) string { return env[k] }, time.Now, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
 func TestOperatorIssuesAUserTokenThatLandsUntilRevoked(t *testing.T) {
 	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})

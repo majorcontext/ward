@@ -407,6 +407,8 @@ type wardOpts struct {
 	readBudget time.Duration
 	// oidc turns on OIDC identities, signed by this issuer, for the users of the domain dev.test on the repository of the harness.
 	oidc *identitytest.Issuer
+	// oidcHeader is the header that carries the JWT. Empty means Authorization.
+	oidcHeader string
 }
 
 type wardProc struct {
@@ -486,6 +488,7 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	if o.oidc != nil {
 		rules, _ := json.Marshal([]map[string]any{{"principals": []string{"@dev.test"}, "repos": []string{h.repo}}})
 		env["WARD_OIDC_ISSUER"], env["WARD_OIDC_AUDIENCE"], env["WARD_OIDC_KEYS_URL"], env["WARD_OIDC_RULES"] = "https://idp.example.test", "aud1", o.oidc.URL, string(rules)
+		env["WARD_OIDC_HEADER"] = o.oidcHeader
 	}
 	adjust := func(c *config.Config) {
 		if len(c.Mirror.Mirrors) > 0 {
