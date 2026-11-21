@@ -14,6 +14,8 @@ type Seam struct {
 	Suite string
 	Impls []string
 	Gap   string
+	// Contract is true for a row that documents a contract of the machine with no code interface. It is not a gap.
+	Contract bool
 }
 
 func (s Seam) hasInterface() bool { return s.Iface != "" }
@@ -63,6 +65,9 @@ func ParseTable(doc []byte) ([]Seam, error) {
 				continue
 			}
 			s := Seam{Name: strings.Trim(cells[0], "`"), Iface: codeRef(cells[1]), Suite: codeRef(cells[2]), Gap: cells[4]}
+			if strings.HasPrefix(s.Gap, "Contract:") {
+				s.Contract, s.Gap = true, ""
+			}
 			if !isNone(cells[3]) {
 				for _, p := range strings.Split(cells[3], ",") {
 					s.Impls = append(s.Impls, strings.Trim(strings.TrimSpace(p), "`"))
@@ -96,6 +101,12 @@ func CheckTable(m *Module, seams []Seam) []string {
 func (m *Module) checkSeam(s Seam) []string {
 	var out []string
 	bad := func(format string, a ...any) { out = append(out, s.Name+": "+fmt.Sprintf(format, a...)) }
+	if s.Contract {
+		if s.hasInterface() || s.Suite != "" || len(s.Impls) > 0 {
+			bad("is a contract row and has an interface, a suite or an implementation")
+		}
+		return out
+	}
 	if s.Gap == "" {
 		switch {
 		case !s.hasInterface():

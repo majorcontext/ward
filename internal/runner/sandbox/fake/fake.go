@@ -5,6 +5,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 
 	"github.com/majorcontext/ward/internal/procgroup"
@@ -20,6 +21,9 @@ func (Sandbox) Run(ctx context.Context, spec sandbox.Spec) (sandbox.Outcome, err
 	defer cancel()
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir, cmd.Stdout, cmd.Stderr = spec.Dir, spec.Output, spec.Output
+	if spec.Cache != "" {
+		cmd.Env = append(os.Environ(), sandbox.CacheEnv(spec.Cache)...)
+	}
 	err := procgroup.Run(runCtx, cmd, nil)
 	var exit *exec.ExitError
 	switch {

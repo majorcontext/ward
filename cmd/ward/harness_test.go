@@ -325,8 +325,10 @@ func (h *harness) readClient() *client.Client { return h.motte.Client(h.motte.Re
 
 func (h *harness) operatorClient() *client.Client { return h.motte.Client(h.motte.OperatorGrant(h.t)) }
 
-func (h *harness) token(scope token.Scope, repo string) string {
-	tok, err := token.Signer{Kid: "c", Key: h.callerSK}.Mint(token.Claims{Scope: scope, Repo: repo, Exp: time.Now().Add(time.Hour).Unix()})
+func (h *harness) token(scope token.Scope, repo string) string { return h.tokenAs("c", scope, repo) }
+
+func (h *harness) tokenAs(kid string, scope token.Scope, repo string) string {
+	tok, err := token.Signer{Kid: kid, Key: h.callerSK}.Mint(token.Claims{Scope: scope, Repo: repo, Exp: time.Now().Add(time.Hour).Unix()})
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -353,6 +355,9 @@ type wardOpts struct {
 	seedInflated string
 	// runner is the runner of the repository of the harness.
 	runner *fakeRunner
+	// pullKids makes the repository of the harness a pull repository that these runner kids serve, at pullMin isolation.
+	pullKids []string
+	pullMin  string
 	// noMirror starts ward with no mirror, and so with no remote work and no wait for a reconcile.
 	noMirror bool
 	// readBudget sets the time limit of a read of motte by a land.
@@ -383,7 +388,11 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		o.refs = []string{"feature/*"}
 	}
 	seed := base64.StdEncoding.EncodeToString(h.motte.Operator.Key.Seed())
-	trusted, _ := json.Marshal([]map[string]any{{"kid": "c", "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land", "check"}}})
+	var keys []map[string]any
+	for _, kid := range []string{"c", "c2", "c3"} {
+		keys = append(keys, map[string]any{"kid": kid, "key": base64.StdEncoding.EncodeToString(h.callerPK), "scopes": []string{"read", "operator", "land", "check", "runner"}})
+	}
+	trusted, _ := json.Marshal(keys)
 	dataDir, credFile := h.dataDir, h.credFile()
 	if o.relative {
 		dir, err := os.MkdirTemp(".", "rel-")
@@ -412,6 +421,10 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	runners := ""
 	if o.runner != nil {
 		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, URL: o.runner.srv.URL, SecretFile: h.writeFile("runner.secret", runnerSecret+"\n"), Env: runnerEnv}})
+		runners = string(raw)
+	}
+	if o.pullKids != nil {
+		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, Mode: check.ModePull, Kids: o.pullKids, MinIsolation: o.pullMin, Env: runnerEnv}})
 		runners = string(raw)
 	}
 	motteURL := h.motte.URL

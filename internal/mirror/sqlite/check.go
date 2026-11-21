@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
@@ -34,7 +35,15 @@ CREATE TABLE IF NOT EXISTS check_results (
 	summary TEXT NOT NULL,
 	log_url TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS check_results_key ON check_results (repo, tree, check_hash, env);`
+CREATE INDEX IF NOT EXISTS check_results_key ON check_results (repo, tree, check_hash, env);
+CREATE TABLE IF NOT EXISTS check_leases (
+	seq INTEGER PRIMARY KEY AUTOINCREMENT,
+	lease_id TEXT NOT NULL UNIQUE,
+	request_id TEXT NOT NULL,
+	kid TEXT NOT NULL,
+	until INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS check_leases_request ON check_leases (request_id, seq);`
 
 var _ check.Store = (*Store)(nil)
 
@@ -183,4 +192,53 @@ func (s *Store) MaxResultID(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM check_results`).Scan(&n)
 	return n, err
+}
+
+func (s *Store) Lease(ctx context.Context, repos []string, kid, leaseID string, now, until time.Time) (check.Request, bool, error) {
+	if len(repos) == 0 {
+		return check.Request{}, false, nil
+	}
+	var out check.Request
+	leased := false
+	args := make([]any, 0, len(repos)+1)
+	for _, r := range repos {
+		args = append(args, r)
+	}
+	args = append(args, micro(now))
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		r, err := scanRequest(tx.QueryRowContext(ctx, `SELECT `+requestColumns+` FROM check_requests r
+			WHERE open = 1 AND repo IN (?`+strings.Repeat(`, ?`, len(repos)-1)+`)
+			AND NOT EXISTS (SELECT 1 FROM check_leases l WHERE l.request_id = r.id AND l.until > ?)
+			ORDER BY rowid LIMIT 1`, args...))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO check_leases (lease_id, request_id, kid, until) VALUES (?, ?, ?, ?)`, leaseID, r.ID, kid, micro(until)); err != nil {
+			return err
+		}
+		out, leased = r, true
+		return nil
+	})
+	return out, leased, err
+}
+
+func (s *Store) RenewLease(ctx context.Context, leaseID, kid string, until time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE check_leases SET until = ? WHERE lease_id = ? AND kid = ?
+		AND EXISTS (SELECT 1 FROM check_requests r WHERE r.id = check_leases.request_id AND r.open = 1)
+		AND NOT EXISTS (SELECT 1 FROM check_leases n WHERE n.request_id = check_leases.request_id AND n.seq > check_leases.seq)`,
+		micro(until), leaseID, kid)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+func (s *Store) Leased(ctx context.Context, requestID, kid string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM check_leases WHERE request_id = ? AND kid = ?`, requestID, kid).Scan(&n)
+	return n > 0, err
 }

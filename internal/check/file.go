@@ -4,11 +4,11 @@ package check
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"regexp"
 
+	"github.com/majorcontext/ward/internal/dispatch"
 	"github.com/majorcontext/ward/runnerproto"
 	"github.com/tailscale/hujson"
 )
@@ -113,4 +113,4 @@ func parseCheck(raw json.RawMessage) (Check, error) {
 }
 
 // ErrNoRunner means that no runner is configured for the repository.
-var ErrNoRunner = errors.New("check: no runner for the repository")
+var ErrNoRunner = dispatch.ErrNoRunner

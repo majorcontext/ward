@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ward check runner protocol",
-  "description": "ward POSTs a Request to the hook URL of a runner with the header Ward-Signature: sha256=<hex HMAC-SHA256 of the exact body bytes under the shared secret>. A 2xx answer accepts the request. The runner later POSTs a Result to <ward>/v1/results with the header Authorization: Bearer <check token>. A check token is wd1.<base64url payload>.<base64url Ed25519 signature>, with the claims kid, scope=check, repo and exp.",
+  "description": "ward POSTs a Request to the hook URL of a runner with the header Ward-Signature: sha256=<hex HMAC-SHA256 of the exact body bytes under the shared secret>. A 2xx answer accepts the request. The runner later POSTs a Result to <ward>/v1/results with the header Authorization: Bearer <check token>. A check token is wd1.<base64url payload>.<base64url Ed25519 signature>, with the claims kid, scope=check, repo and exp. A pull runner dials out instead: it POSTs a LeaseRequest to <ward>/v1/runner/leases with a runner token (the same encoding, with the claims kid, scope=runner and exp), and ward holds the poll for up to 20 seconds, then answers 200 with a Lease or 204. The runner POSTs an empty JSON object to <ward>/v1/runner/leases/<lease_id>/renew about every third of ttl_seconds, and stops the check when ward answers 410. A lease that is not renewed ends, and ward leases the same request_id again. The result post is the same as for a push runner.",
   "$defs": {
     "Check": {
       "type": "object",
@@ -35,6 +35,30 @@
         "status": {"enum": ["pass", "fail"]},
         "summary": {"type": "string", "maxLength": 4096, "description": "At most 4096 bytes."},
         "log_url": {"type": "string", "description": "At most 2048 bytes. May be empty."}
+      }
+    },
+    "LeaseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["isolation"],
+      "properties": {
+        "isolation": {"enum": ["container", "gvisor"], "description": "The sandbox that the runner uses for every check. ward answers 403 when it is weaker than the minimum of every repository that the runner serves."}
+      }
+    },
+    "Lease": {
+      "type": "object",
+      "required": ["lease_id", "ttl_seconds", "request"],
+      "properties": {
+        "lease_id": {"type": "string", "minLength": 1},
+        "ttl_seconds": {"type": "integer", "minimum": 1, "description": "The lease ends this long after the last renewal."},
+        "request": {"$ref": "#/$defs/Request"}
+      }
+    },
+    "Renewal": {
+      "type": "object",
+      "required": ["ttl_seconds"],
+      "properties": {
+        "ttl_seconds": {"type": "integer", "minimum": 1}
       }
     }
   }

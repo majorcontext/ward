@@ -193,7 +193,7 @@ func parseTrustedKeys(raw string) ([]token.Key, error) {
 		}
 		tk := token.Key{Kid: k.Kid, Public: pub}
 		for _, s := range k.Scopes {
-			if s != string(token.ScopeRead) && s != string(token.ScopeOperator) && s != string(token.ScopeLand) && s != string(token.ScopeCheck) {
+			if s != string(token.ScopeRead) && s != string(token.ScopeOperator) && s != string(token.ScopeLand) && s != string(token.ScopeCheck) && s != string(token.ScopeRunner) {
 				return nil, fmt.Errorf("key %q has the unknown scope %q", k.Kid, s)
 			}
 			tk.Scopes = append(tk.Scopes, token.Scope(s))

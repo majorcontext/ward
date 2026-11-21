@@ -25,6 +25,8 @@ type Config struct {
 	Listen      string
 	Options     Options
 	SandboxKind string
+	// Pull is true when the runner polls ward for leases and serves no hook.
+	Pull bool
 }
 
 // Load reads the configuration from getenv and builds the runner options. SandboxKind is gvisor, container or auto.
@@ -34,7 +36,18 @@ func Load(getenv func(string) string) (Config, error) {
 	if v := getenv("WARD_RUNNER_LISTEN"); v != "" {
 		c.Listen = v
 	}
-	for _, name := range []string{"WARD_RUNNER_WARD_URL", "WARD_RUNNER_SECRET_FILE", "WARD_RUNNER_KID", "WARD_RUNNER_KEY_FILE", "WARD_RUNNER_MOTTE_URL", "WARD_RUNNER_MOTTE_GRANT_FILE", "WARD_RUNNER_IMAGE"} {
+	switch getenv("WARD_RUNNER_MODE") {
+	case "", "push":
+	case "pull":
+		c.Pull = true
+	default:
+		return c, errors.New("WARD_RUNNER_MODE must be push or pull")
+	}
+	required := []string{"WARD_RUNNER_WARD_URL", "WARD_RUNNER_KID", "WARD_RUNNER_KEY_FILE", "WARD_RUNNER_MOTTE_URL", "WARD_RUNNER_MOTTE_GRANT_FILE", "WARD_RUNNER_IMAGE"}
+	if !c.Pull {
+		required = append(required, "WARD_RUNNER_SECRET_FILE")
+	}
+	for _, name := range required {
 		if getenv(name) == "" {
 			return c, fmt.Errorf("%s is required", name)
 		}
@@ -49,8 +62,10 @@ func Load(getenv func(string) string) (Config, error) {
 		return c, fmt.Errorf("WARD_RUNNER_KEY_FILE: %w", err)
 	}
 	secretFile, grantFile, kid := getenv("WARD_RUNNER_SECRET_FILE"), getenv("WARD_RUNNER_MOTTE_GRANT_FILE"), getenv("WARD_RUNNER_KID")
-	if _, err := readText(secretFile); err != nil {
-		return c, fmt.Errorf("WARD_RUNNER_SECRET_FILE: %w", err)
+	if !c.Pull {
+		if _, err := readText(secretFile); err != nil {
+			return c, fmt.Errorf("WARD_RUNNER_SECRET_FILE: %w", err)
+		}
 	}
 	if _, err := readText(grantFile); err != nil {
 		return c, fmt.Errorf("WARD_RUNNER_MOTTE_GRANT_FILE: %w", err)
@@ -90,10 +105,19 @@ func Load(getenv func(string) string) (Config, error) {
 		Token: func(repo string, exp time.Time) (string, error) {
 			return runnerproto.MintCheckToken(kid, ed25519.PrivateKey(key), repo, "ward-runner", exp)
 		},
+		RunnerToken: func(exp time.Time) (string, error) {
+			return runnerproto.MintRunnerToken(kid, ed25519.PrivateKey(key), "ward-runner", exp)
+		},
+		Isolation:   runnerproto.Isolation(c.SandboxKind),
 		Fetch:       fetch.Fetch,
 		Sandbox:     sb,
 		Concurrency: conc,
 		WorkDir:     work,
+	}
+	if v := getenv("WARD_RUNNER_CACHE_DIR"); v != "" {
+		if c.Options.CacheDir, err = filepath.Abs(v); err != nil {
+			return c, fmt.Errorf("WARD_RUNNER_CACHE_DIR: %w", err)
+		}
 	}
 	return c, nil
 }

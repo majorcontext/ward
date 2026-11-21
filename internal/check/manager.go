@@ -1,26 +1,20 @@
 package check
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/majorcontext/ward/internal/dispatch"
 	"github.com/majorcontext/ward/runnerproto"
 )
 
-const (
-	resendMargin = 10 * time.Minute
-	postTimeout  = 30 * time.Second
-)
+const resendMargin = 10 * time.Minute
 
 var (
 	// ErrInvalid means that a posted result breaks a rule of the body.
@@ -29,6 +23,8 @@ var (
 	ErrUnknownRequest = errors.New("check: unknown request")
 	// ErrOtherRepo means that the request belongs to another repository.
 	ErrOtherRepo = errors.New("check: request of another repository")
+	// ErrNotRegistered means that the poster is not a runner that leased the request of a pull repository.
+	ErrNotRegistered = errors.New("check: runner not registered for the repository")
 )
 
 // State is the state of one check for one tree.
@@ -52,11 +48,11 @@ type Posted = runnerproto.Result
 
 // Manager keeps the results and sends the check requests. It has no poll: a result wakes the waiters.
 type Manager struct {
-	store   Store
-	runners map[string]Runner
-	clock   Clock
-	log     *slog.Logger
-	http    *http.Client
+	store    Store
+	runners  map[string]Runner
+	dispatch map[string]dispatch.Dispatcher
+	clock    Clock
+	log      *slog.Logger
 
 	mu      sync.Mutex
 	changed chan struct{}
@@ -64,19 +60,18 @@ type Manager struct {
 	wg      sync.WaitGroup
 }
 
-// New returns a manager. A nil clock means the wall clock.
-func New(store Store, runners []Runner, clock Clock, log *slog.Logger) *Manager {
+// New returns a manager. dispatch holds the dispatcher of each repository of runners. A nil clock means the wall clock.
+func New(store Store, runners []Runner, dispatch map[string]dispatch.Dispatcher, clock Clock, log *slog.Logger) *Manager {
 	if clock == nil {
 		clock = RealClock()
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	m := &Manager{store: store, runners: map[string]Runner{}, clock: clock, log: log, changed: make(chan struct{})}
+	m := &Manager{store: store, runners: map[string]Runner{}, dispatch: dispatch, clock: clock, log: log, changed: make(chan struct{})}
 	for _, r := range runners {
 		m.runners[r.Repo] = r
 	}
-	m.http = &http.Client{Timeout: postTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return m
 }
 
@@ -174,8 +169,9 @@ func (m *Manager) Ensure(ctx context.Context, repo, tree, commit string, c Check
 	return nil
 }
 
-// Post records a result that a runner posted for a repository. A second result for a request changes nothing.
-func (m *Manager) Post(ctx context.Context, repo string, p Posted) error {
+// Post records a result that the runner kid posted for a repository. A second result for a request changes nothing. For a
+// pull repository, kid must be one of the kids of the repository and must have leased the request.
+func (m *Manager) Post(ctx context.Context, repo, kid string, p Posted) error {
 	if (p.Status != StatusPass && p.Status != StatusFail) || len(p.Summary) > runnerproto.MaxSummary || len(p.LogURL) > runnerproto.MaxLogURL {
 		return ErrInvalid
 	}
@@ -187,6 +183,16 @@ func (m *Manager) Post(ctx context.Context, repo string, p Posted) error {
 		return ErrUnknownRequest
 	case req.Repo != repo:
 		return ErrOtherRepo
+	}
+	if r := m.runners[repo]; r.Pull() {
+		if !slices.Contains(r.Kids, kid) {
+			return ErrNotRegistered
+		}
+		if leased, err := m.store.Leased(ctx, req.ID, kid); err != nil {
+			return err
+		} else if !leased {
+			return ErrNotRegistered
+		}
 	}
 	added, err := m.store.AddResult(ctx, Result{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Hash: req.Hash, Env: req.Env, Status: p.Status, Summary: p.Summary, LogURL: p.LogURL})
 	if err != nil {
@@ -295,34 +301,11 @@ func (m *Manager) resend(ctx context.Context, old Request) (Request, bool, error
 }
 
 func (m *Manager) post(ctx context.Context, req Request) error {
-	r, ok := m.runners[req.Repo]
+	d, ok := m.dispatch[req.Repo]
 	if !ok {
 		return ErrNoRunner
 	}
-	secret, err := r.secret()
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(runnerproto.Request{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env})
-	if err != nil {
-		return err
-	}
-	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	hr.Header.Set("Content-Type", "application/json")
-	hr.Header.Set(runnerproto.SignatureHeader, runnerproto.Sign(secret, body))
-	resp, err := m.http.Do(hr)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("runner answered %d", resp.StatusCode)
-	}
-	return nil
+	return d.Dispatch(ctx, runnerproto.Request{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env})
 }
 
 func newID() (string, error) {

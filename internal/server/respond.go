@@ -17,6 +17,7 @@ const (
 	codeLandConflict     code = "land_conflict"
 	codeLandInvalid      code = "land_invalid"
 	codeLandTimeout      code = "land_timeout"
+	codeLeaseLost        code = "lease_lost"
 )
 
 var statuses = map[code]int{
@@ -29,6 +30,7 @@ var statuses = map[code]int{
 	codeLandConflict:     http.StatusConflict,
 	codeLandInvalid:      http.StatusBadRequest,
 	codeLandTimeout:      http.StatusGatewayTimeout,
+	codeLeaseLost:        http.StatusGone,
 }
 
 type errorBody struct {

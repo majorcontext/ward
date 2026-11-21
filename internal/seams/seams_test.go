@@ -138,6 +138,8 @@ func TestCheckSeams(t *testing.T) {
 		{"unlisted assertion", func(f fstest.MapFS) {
 			f["other/o.go"] = file("package other\nimport \"example.test/m/kv\"\nvar _ kv.Store = nil\n")
 		}, fixtureTable, "kv: package other asserts kv.Store and is not in the implementations"},
+		{"contract row with no interface", func(fstest.MapFS) {}, strings.Replace(fixtureTable, "\n## Next", "| host | none | none | none | Contract: the machine provides X |\n\n## Next", 1), ""},
+		{"contract row with an interface", func(fstest.MapFS) {}, strings.Replace(fixtureTable, "\n## Next", "| host | `kv.Store` | none | none | Contract: x |\n\n## Next", 1), "host: is a contract row and has an interface"},
 		{"missing table row", func(fstest.MapFS) {}, strings.Replace(fixtureTable, ", `kv/disk`", "", 1), "kv: has 1 implementations, want at least 2, or a gap reason"},
 		{"SDK import outside an implementation", func(f fstest.MapFS) {
 			f["svc/s.go"] = file("package svc\nimport _ \"github.com/aws/aws-sdk-go-v2/service/s3\"\n")

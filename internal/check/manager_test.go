@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
+	"github.com/majorcontext/ward/internal/dispatch"
+	"github.com/majorcontext/ward/internal/dispatch/push"
 	"github.com/majorcontext/ward/internal/mirror/sqlite"
 )
 
@@ -105,7 +107,8 @@ func TestLateRequestIsSentAgainAfterAStoreReadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	clk := &stepClock{now: time.Unix(1_000_000, 0), added: make(chan struct{}, 64)}
-	m := check.New(store, []check.Runner{{Repo: "r", URL: srv.URL, SecretFile: secret, Env: "e"}}, clk, nil)
+	runners := []check.Runner{{Repo: "r", URL: srv.URL, SecretFile: secret, Env: "e"}}
+	m := check.New(store, runners, map[string]dispatch.Dispatcher{"r": push.New(runners)}, clk, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	if err := m.Start(ctx); err != nil {
 		t.Fatal(err)

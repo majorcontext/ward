@@ -30,14 +30,14 @@ func (s *Server) postResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeInvalidBody, "the body needs request_id, status, summary and log_url")
 		return
 	}
-	switch err := s.d.Checks.Post(r.Context(), c.Repo, p); {
+	switch err := s.d.Checks.Post(r.Context(), c.Repo, c.Kid, p); {
 	case err == nil:
 		w.WriteHeader(http.StatusOK)
 	case errors.Is(err, check.ErrInvalid):
 		writeError(w, codeInvalidBody, "status is pass or fail, summary has at most 4096 bytes and log_url at most 2048")
 	case errors.Is(err, check.ErrUnknownRequest):
 		writeError(w, codeNotFound, "not found")
-	case errors.Is(err, check.ErrOtherRepo):
+	case errors.Is(err, check.ErrOtherRepo), errors.Is(err, check.ErrNotRegistered):
 		writeError(w, codeForbidden, "forbidden")
 	default:
 		s.d.Logger.Error("record result", "error", err.Error())

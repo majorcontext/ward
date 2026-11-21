@@ -30,6 +30,12 @@ func runRunner(ctx context.Context, getenv func(string) string, ln net.Listener,
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r := runner.New(runCtx, cfg.Options)
+	if cfg.Pull {
+		log.Info("ward runner started", "mode", "pull", "sandbox", cfg.SandboxKind)
+		r.Pull(runCtx)
+		r.Wait()
+		return 0
+	}
 	if ln == nil {
 		if ln, err = net.Listen("tcp", cfg.Listen); err != nil {
 			fmt.Fprintln(stderr, "ward runner:", err)

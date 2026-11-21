@@ -58,8 +58,13 @@ func tree(t *testing.T) string {
 
 func run(t *testing.T, s sandbox.Sandbox, dir string, timeout time.Duration, argv ...string) (sandbox.Outcome, string) {
 	t.Helper()
+	return runCached(t, s, dir, "", timeout, argv...)
+}
+
+func runCached(t *testing.T, s sandbox.Sandbox, dir, cache string, timeout time.Duration, argv ...string) (sandbox.Outcome, string) {
+	t.Helper()
 	var out syncBuffer
-	o, err := s.Run(context.Background(), sandbox.Spec{Dir: dir, Argv: argv, Timeout: timeout, Output: &out})
+	o, err := s.Run(context.Background(), sandbox.Spec{Dir: dir, Cache: cache, Argv: argv, Timeout: timeout, Output: &out})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -97,6 +102,18 @@ func Run(t *testing.T, impl Impl) {
 		}
 		if got, err := os.ReadFile(filepath.Join(dir, "artifact")); err != nil || strings.TrimSpace(string(got)) != "built" {
 			t.Errorf("artifact: %q, %v", got, err)
+		}
+	})
+	t.Run("cache persists for one directory only", func(t *testing.T) {
+		s, a, b := impl.New(t), tree(t), tree(t)
+		if o, _ := runCached(t, s, tree(t), a, long, "sh", "-c", `test "$GOCACHE" = "$WARD_CACHE_DIR/go-build" && echo kept > "$WARD_CACHE_DIR/f"`); o.ExitCode != 0 {
+			t.Fatalf("write: %+v", o)
+		}
+		if o, out := runCached(t, s, tree(t), a, long, "sh", "-c", `cat "$WARD_CACHE_DIR/f"`); o.ExitCode != 0 || !strings.Contains(out, "kept") {
+			t.Errorf("same cache: %+v %q", o, out)
+		}
+		if o, _ := runCached(t, s, tree(t), b, long, "sh", "-c", `test ! -e "$WARD_CACHE_DIR/f"`); o.ExitCode != 0 {
+			t.Errorf("another cache saw the file: %+v", o)
 		}
 	})
 	t.Run("timeout kills the group", func(t *testing.T) {

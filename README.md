@@ -15,9 +15,13 @@ ward never runs a check. A runner does, and ward needs one runner for each repos
 | | External runner | `ward runner` |
 |---|---|---|
 | What it is | A service that you already have, or write: it receives a signed check request and posts a result. | A process of this repository. It fetches the exact tree from motte and runs each check in a sandbox. |
-| Setup | An entry in `WARD_RUNNERS` (`repo`, `url`, `secret_file`, `env`). | The same entry, with the `url` of the runner, plus the environment of `ward runner`. |
+| Setup | An entry in `WARD_RUNNERS` (`repo`, `url`, `secret_file`, `env`). | The same entry, with the `url` of the runner, plus the environment of `ward runner`. Or a pull entry (`mode: pull`, `kids`) and `ward runner install`. |
 | Sandbox | Its own. | A container through any OCI engine (docker, podman), under gVisor (`runsc`) when it is on the path. |
 | Needs | Whatever the service needs. | A container engine, a read grant of motte and a check key that ward trusts. |
+
+A runner receives its work in one of two ways. In push mode ward posts each request to the URL of the runner, so ward must reach the runner. In pull mode the runner dials out to ward, long-polls for a lease on a request, renews the lease while it runs, and posts the result with its own check token. Pull needs no inbound network, so a runner can sit behind a firewall or a tunnel. Each pull runner has its own key (`kid`), listed in the `kids` of each repository that it may serve. A pull runner must run its checks under gVisor unless the entry of the repository says `"min_isolation":"container"`.
+
+A runner can live on any bare-metal Linux host of any provider, or on your own hardware. ward holds no provider code. The host needs a container engine, `runsc` with `/dev/kvm`, a cache directory on local disk and outbound HTTPS. `ward runner install` checks the host, writes the systemd unit and the environment file, and prints what is missing.
 
 No specific vendor is required for either. A runner of another author can test itself with `runnerproto/runnertest`. See `docs/standalone-runner.md` to run `ward runner` on Kubernetes (the chart value `runner.enabled`) or on a Linux machine. The wire and the variables are in `docs/architecture.md`, Runner protocol and Standalone runner.
 

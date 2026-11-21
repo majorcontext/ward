@@ -27,6 +27,7 @@ Non-goals:
 | `internal/check` | Checks (see Checks): the check file, the result store, and the delivery of check requests to the runner. | W5 |
 | `runnerproto` | The public wire protocol of a check runner (see Runner protocol): request, signature, result, check token and the JSON schema. `runnerproto/runnertest` is its conformance suite. | W6 |
 | `internal/runner` | `ward runner` (see Standalone runner): the hook, the tree fetch from motte and the post of the result. `internal/runner/sandbox` is the sandbox seam with the implementations `container`, `gvisor` and `fake`. | W6 |
+| `internal/dispatch` | The seam `dispatch.Dispatcher` and its implementations `push`, `pull` and `memdispatch` (see Dispatch). `internal/runner/install` is `ward runner install` (see Runner host). | W6 |
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/mirror/sqlite` is its state store. | W2, W3, W4 |
 | `internal/telemetry` | OTLP trace export. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
@@ -60,7 +61,7 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_MOTTE_KEY_FILE` | Path of the file that holds the Ed25519 private key that signs those grants, as the standard base64 of its 64 bytes or of its 32-byte seed. Required. |
 | `WARD_PUBLIC_URL` | Base URL under which motte reaches ward. The receiver URL is this value plus `/v1/hooks/motte`. Required when a mirror is configured. |
 | `WARD_HOOK_SECRET_FILE` | Path of the file that holds the subscription secret (16 to 256 bytes, with a final line break removed). Required when a mirror is configured. |
-| `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read`, `operator`, `land` and `check`. The service refuses to start on any other scope text. |
+| `WARD_TRUSTED_KEYS` | JSON list of `{"kid","key","scopes"}` for caller tokens. `key` is the standard base64 of an Ed25519 public key. `scopes` holds only `read`, `operator`, `land`, `check` and `runner`. The service refuses to start on any other scope text. |
 | `WARD_OIDC_ISSUER` | Optional. The exact `iss` claim of an OIDC issuer. Turns on OIDC identities on the land routes (see Human identity). Off by default. |
 | `WARD_OIDC_AUDIENCE` | The `aud` claim. Required with the issuer. |
 | `WARD_OIDC_RULES` | JSON list of `{"principals","repos"}`. A principal is a claim value (an email by default) or `@domain`. `repos` holds repository texts. Required with the issuer. |
@@ -70,7 +71,7 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_OIDC_ALGS` | Optional. Comma-separated algorithms from `RS256`, `RS384`, `RS512`, `ES256`, `ES384`. Default `RS256`. |
 | `WARD_TLS_CERT`, `WARD_TLS_KEY` | Optional. PEM files. When both are set ward serves TLS itself. When neither is set it serves plain HTTP for a reverse proxy, a tunnel or a local run. One without the other is an error. |
 | `WARD_MIRRORS` | JSON list of mirror entries (see Mirror, Configuration). Optional. |
-| `WARD_RUNNERS` | JSON list of runner entries (see Checks, Runner). Optional. A repository with a check file and no runner fails each land onto that ref with `land_invalid`. |
+| `WARD_RUNNERS` | JSON list of runner entries (see Checks, Runner and Dispatch). Optional. A repository with a check file and no runner fails each land onto that ref with `land_invalid`. |
 | `WARD_GITHUB_API_URL` | Base URL of the GitHub API for the GitHub App credential. An `http` or `https` URL. Default `https://api.github.com`. |
 | `WARD_STATE_FILE` | Path of the SQLite file of the state store. Default `WARD_DATA_DIR/state.db`. |
 | `WARD_CLONE_DISK_BUDGET` | Bytes that the clone cache may use. Default 20 GiB. |
@@ -94,12 +95,12 @@ A caller token has the same encoding as a motte grant: `wd1.<base64url payload>.
 | Claim | Meaning |
 |---|---|
 | `kid` | Key identifier. The verifier selects the public key by `kid`. |
-| `scope` | `read`, `operator`, `land` or `check`. |
+| `scope` | `read`, `operator`, `land`, `check` or `runner`. |
 | `repo` | Repository text of motte. Required for `read`, `land` and `check`. |
 | `subject` | The caller identity, for logs and traces only. It grants nothing. |
 | `exp` | Expiry as Unix seconds. A token is valid while `now < exp`. |
 
-`read` names one repository and may read its mirror status. `operator` may read every status and may trigger a repair. `land` names one repository and may land a branch of it and read its lands (see Land); it reads no status. `check` names one repository and may post check results of it (see Checks); it does nothing else. The verifier holds only public keys, each with a set of allowed scopes. Every rejection answers 401 `unauthorized` with the same body, and the response never carries the token. ward takes the repository from the token, never from an unchecked request field.
+`read` names one repository and may read its mirror status. `operator` may read every status and may trigger a repair. `land` names one repository and may land a branch of it and read its lands (see Land); it reads no status. `check` names one repository and may post check results of it (see Checks); it does nothing else. `runner` names no repository: it identifies a pull runner by its `kid` and may poll for a lease and renew it (see Dispatch). The repositories of a `runner` token come from the `kids` of the `WARD_RUNNERS` entries, never from the token. The verifier holds only public keys, each with a set of allowed scopes. Every rejection answers 401 `unauthorized` with the same body, and the response never carries the token. ward takes the repository from the token, never from an unchecked request field.
 
 ## Human identity
 
@@ -394,9 +395,30 @@ Runner. `WARD_RUNNERS` is a JSON list of `{repo, url, secret_file, env}`, one en
 
 The runner answers with `POST /v1/results` and a `check` token of the repository. The body is `{request_id, status, summary, log_url}`. `status` is `pass` or `fail`. A body with an unknown field, another `status`, a `summary` of more than 4096 bytes or a `log_url` of more than 2048 bytes answers 400 `invalid_body`. An unknown `request_id` answers 404 `not_found`. A request of another repository answers 403 `forbidden`. A second result for one request answers 200 and changes nothing. A result wakes the land that waits for it, so no land polls.
 
+### Dispatch
+
+The interface `dispatch.Dispatcher` has one method, `Dispatch(ctx, runnerproto.Request) error`. The manager stores a request as open and then calls it, with the backoff of Runner, until it returns nil. Delivery is at least once with the same `request_id`. The mode of the `WARD_RUNNERS` entry picks the implementation. An entry has either `"mode":"push"` (the default) or `"mode":"pull"`; a field of the other mode refuses the start.
+
+Push (`internal/dispatch/push`). The entry has `url` and `secret_file`. ward posts each request to the runner, as in Runner. The bytes do not change.
+
+Pull (`internal/dispatch/pull`). The entry has `kids`, a list of runner identities, and `min_isolation` (`gvisor` by default, or `container`). It has no `url` and no `secret_file`. The request waits in the store. A runner dials out to ward, so it needs no inbound network and works behind a tunnel or a firewall:
+
+- `POST /v1/runner/leases` with a runner token and the body `{"isolation"}`. ward holds the poll for up to 20 seconds. It answers 200 `{lease_id, ttl_seconds, request}` for the oldest open request of a repository that the `kid` serves at that isolation that has no live lease, or 204. A `kid` that no entry lists, or an `isolation` below the `min_isolation` of every repository that the `kid` serves, answers 403 `forbidden`. A repository with a lower minimum serves a runner that a stronger one refuses; a runner never gets a repository whose minimum it does not meet.
+- `POST /v1/runner/leases/{lease_id}/renew` with the runner token of the same `kid`. It sets the end of the lease to now plus `ttl_seconds` (60) and answers 200 `{ttl_seconds}`. A lease that the runner does not hold, a lease that a newer lease replaced, and a request that is closed answer 410 `lease_lost`. The runner stops the check then. The runner renews about every third of `ttl_seconds`.
+- A lease that is not renewed ends. The same request, with the same `request_id`, is then leasable again: the queue is the open requests of the store, so a restart of ward loses no lease state and no request. A request with no result `timeout_seconds` plus 10 minutes after it was accepted is sent again with a new `request_id`, as in Runner.
+- The runner posts the result to `POST /v1/results` with a `check` token whose `kid` is its own. For a pull repository ward accepts the result only when the `kid` is in `kids` of the entry and has leased that request; otherwise it answers 403 `forbidden`. A runner whose lease ended may still post: the result is a fact about the tree, and a second result changes nothing.
+
+Identity. Each runner has its own Ed25519 key. ward trusts the public key in `WARD_TRUSTED_KEYS` with the scopes `runner` and `check`. A runner is registered for a repository by its `kid` in the `kids` of the entry. To revoke one runner, remove its key from `WARD_TRUSTED_KEYS` or its `kid` from `kids`: no other runner changes.
+
+Isolation. The default minimum is `gvisor`. A `container` runner serves a repository only when its entry says `"min_isolation":"container"`. Nothing lowers the minimum by default. The runner reports the sandbox that it runs: `WARD_RUNNER_SANDBOX=auto` resolves to `gvisor` or `container` before the first poll.
+
+`internal/dispatch/memdispatch` is the in-memory implementation. `internal/dispatch/dispatchtest.Run` is the suite that push, pull and memdispatch all run: the request arrives unchanged, each request arrives, a request reaches only a runner of its repository, and a repository with no runner is `ErrNoRunner`.
+
 ### Runner protocol
 
 The package `runnerproto` is the one definition of the runner wire. It exports `Check` with `Hash`, `Request`, `Result`, `Status`, `Sign` and `Verify` for `Ward-Signature`, `Decode` for a request, `MintCheckToken`, `PostResult` and the interface `Runner`. `runnerproto/runner.schema.json` is the JSON schema of the bodies. ward, `ward runner` and a runner of another author use this package or this schema. `runnerproto/runnertest.Run` is the conformance suite of a runner: it posts signed requests and holds a results route that verifies the check token. Golden tests fix the exact bytes of the request, of its signature and of the result. A change to those bytes is a change to this contract.
+
+The package also exports the pull wire: `LeasesPath`, `RenewPath`, `LeaseWait`, `Isolation` (`container`, `gvisor`) with `Rank` and `AtLeast`, `LeaseRequest`, `Lease`, `Renewal`, `MintRunnerToken`, `PollLease` and `RenewLease`. The schema and the golden tests cover them (see Dispatch).
 
 A runner refuses a request with a wrong signature with 401 and a request whose `check_hash` is not the hash of `check` with 400. It answers 2xx when it accepts the request, and it posts the result later. A runner may answer a repeated `request_id` with 2xx and run it once.
 
@@ -406,10 +428,11 @@ A runner refuses a request with a wrong signature with 401 and a request whose `
 
 | Variable | Meaning |
 |---|---|
-| `WARD_RUNNER_LISTEN` | Listen address. Default `:8081`. |
+| `WARD_RUNNER_MODE` | `push` (default) serves the hook. `pull` polls ward for leases, serves no hook and needs no `WARD_RUNNER_SECRET_FILE` or listener (see Dispatch). |
+| `WARD_RUNNER_LISTEN` | Listen address of the hook. Default `:8081`. Push mode only. |
 | `WARD_RUNNER_WARD_URL` | Base URL of ward. Required. |
-| `WARD_RUNNER_SECRET_FILE` | File that holds the key of `Ward-Signature`. It is the `secret_file` content of the `WARD_RUNNERS` entry. Read for each request. Required. |
-| `WARD_RUNNER_KID`, `WARD_RUNNER_KEY_FILE` | `kid` and Ed25519 private key (base64) that sign the check tokens. The `kid` must be in `WARD_TRUSTED_KEYS` of ward with the scope `check`. Required. |
+| `WARD_RUNNER_SECRET_FILE` | File that holds the key of `Ward-Signature`. It is the `secret_file` content of the `WARD_RUNNERS` entry. Read for each request. Required in push mode. |
+| `WARD_RUNNER_KID`, `WARD_RUNNER_KEY_FILE` | `kid` and Ed25519 private key (base64) that sign the check tokens. The `kid` must be in `WARD_TRUSTED_KEYS` of ward with the scope `check`, and in pull mode also `runner`. Required. |
 | `WARD_RUNNER_MOTTE_URL`, `WARD_RUNNER_MOTTE_GRANT_FILE` | Base URL of motte, and a file with a `read` grant for the repositories to check. Read for each fetch. Required. |
 | `WARD_RUNNER_SANDBOX` | `gvisor`, `container` or `auto`. Default `auto`: `gvisor` when `runsc` is on the path, else `container`. `gvisor` fails the start when `runsc` is missing. |
 | `WARD_RUNNER_ENGINE` | Container engine command, such as `docker` or `podman`. Default `docker`. |
@@ -417,12 +440,27 @@ A runner refuses a request with a wrong signature with 401 and a request whose `
 | `WARD_RUNNER_NETWORK`, `WARD_RUNNER_MEMORY` | Engine network mode (default `none`) and memory limit (default `4g`). |
 | `WARD_RUNNER_CONCURRENCY` | Most checks at one time. Default 1. A request over the limit gets 503, and ward sends it again. |
 | `WARD_RUNNER_WORK_DIR` | Directory of the tree checkouts. Default the temporary directory. |
+| `WARD_RUNNER_CACHE_DIR` | Root of the durable caches. Empty means no cache. |
 
 For each accepted request the runner makes a directory, reads the commit with motte, refuses it when its tree is not `tree`, and writes the files of that tree with the motte tree and blob routes. It refuses an entry name that could leave the directory and an entry of mode 160000. It runs `check.run` with the directory as the working directory in the sandbox, with the limit `timeout_seconds`. It posts `pass` when the exit code is 0. It posts `fail` with the exit code or `timed out`, and the last output, in `summary` (at most 4096 bytes), when the exit code is not 0 or the time passes. It posts `fail` with `runner error:` when the fetch or the sandbox fails. It posts with a check token that lives 10 minutes, repeats a post that fails with a network error, a 5xx or a 429 up to 8 times with a backoff, and stops at another 4xx. The result key is the one of the request: `(repo, tree, check hash, env)` is what ward derives from its own request, so the runner changes nothing about it.
 
 Sandbox. The interface `sandbox.Sandbox` has one method, `Run(ctx, Spec) (Outcome, error)`. The runner never runs an argv on the host. The implementations `container` (any OCI engine with its default runtime) and `gvisor` (the same engine with `--runtime runsc`) run the argv in a container with no network by default, a read-only root file system, a writable `/tmp` and tree directory, no capabilities, `no-new-privileges`, a memory and process limit and the uid of the runner (65532 when the runner is root). A timeout or a cancel removes the container and kills the process group of the engine command, so no process of the run is left. The implementation `fake` runs the argv on the host: it exists for tests only, no configuration selects it, and `cmd/ward` never imports it.
 
+Cache. With `WARD_RUNNER_CACHE_DIR` the runner keeps a directory for each repository and env, named by a hash of each, on local disk across runs. The sandbox mounts it read-write at `/cache` (the container implementations) and sets `WARD_CACHE_DIR`, `GOCACHE` (`$WARD_CACHE_DIR/go-build`), `GOMODCACHE` (`$WARD_CACHE_DIR/go-mod`) and `XDG_CACHE_HOME` (`$WARD_CACHE_DIR/xdg`). A check sees only the cache of its own repository and env, so one repository cannot read or poison the cache of another. Code of a repository can still change the cache of that repository; the `env` still keys each result. The sandbox suite checks that a cache persists for one directory and is invisible to another.
+
 CI runs the sandbox suite on `fake` and, when the job has a container engine, on `container`; the job sets `WARD_REQUIRE_ENGINE`, so the suite fails and does not skip when no engine answers. The `gvisor` suite skips when `runsc` is missing, unless `WARD_REQUIRE_GVISOR` is set.
+
+### Runner host
+
+A runner lives on any Linux host that meets this contract. ward holds no provider code: no cloud SDK, no metadata service call. A provisioning tool of any provider (a module, cloud-init, a hand-built machine) only has to deliver the host:
+
+- Linux with a container engine (`docker` or `podman`).
+- `runsc` (gVisor) registered as a runtime of the engine, and `/dev/kvm` usable by the service user for its KVM platform.
+- A cache directory and a work directory on local disk, not on a network file system and not on `tmpfs`.
+- Outbound HTTPS to ward and to motte. Nothing inbound.
+- A user for the service, the `ward` binary, a motte `read` grant file, and the check key file of the runner.
+
+`ward runner install` checks this on the host that runs it. It needs `--ward-url`, `--kid`, `--motte-url`, `--motte-grant-file` and `--image`. It writes `/etc/systemd/system/ward-runner.service` and `/etc/ward-runner/runner.env` for a pull runner, creates the cache and work directories and the check key when absent, and prints the `WARD_TRUSTED_KEYS` entry and the `kids` change to make in ward. It prints each missing prerequisite and exits 1 when any is missing; the files are written either way. `--root` prefixes every written path. The command reads only the host and is Linux only. The seam table lists `runner-host` as a contract: it has no code interface, so it needs no suite and no second implementation.
 
 ### Local check
 
@@ -467,10 +505,13 @@ Every external provider sits behind an interface that its consumer owns. A provi
 | land-store | `internal/land.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
 | runner-sandbox | `internal/runner/sandbox.Sandbox` | `internal/runner/sandbox/sandboxtest.Run` | `internal/runner/sandbox/container`, `internal/runner/sandbox/gvisor`, `internal/runner/sandbox/fake` | |
 | check-runner | `runnerproto.Runner` | `runnerproto/runnertest.Run` | `internal/runner`, `internal/runner/fakerunner` | |
+| check-dispatch | `internal/dispatch.Dispatcher` | `internal/dispatch/dispatchtest.Run` | `internal/dispatch/push`, `internal/dispatch/pull`, `internal/dispatch/memdispatch` | |
+| runner-host | none — a contract of the machine | none — no code interface | none | Contract: a Linux host with a container engine, `runsc` and `/dev/kvm`, local disk, and outbound HTTPS to ward (see Runner host). |
 | mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
 | mirror-remote-credential | none — the GitHub App exchange is a concrete type in `internal/mirror` | none — no interface exists yet | none | No interface. Only the GitHub App credential and the password file exist. |
 
 - A cell that names Go code is `dir.Identifier`: the directory is relative to the module root.
+- A row whose Gap cell starts with `Contract:` documents a contract of the machine with no code interface. It is not a gap, so it is not in `testdata/seam-gaps.txt`, and it needs no suite and no implementation.
 - A seam that meets the rule has an interface, a suite and at least two implementations. A seam that does not has a reason in the Gap column, and its name is a line of `testdata/seam-gaps.txt`. The list only shrinks: CI fails a gap that the merge base does not list.
 - A package under the directory of the interface (the suite excepted), or a package that holds `var _ pkg.Interface = ...`, is an implementation. The table must list it.
 - Each implementation has a test that calls the suite function.

@@ -16,21 +16,25 @@ import (
 	"github.com/majorcontext/motte/api"
 
 	"github.com/majorcontext/ward/internal/check"
+	"github.com/majorcontext/ward/internal/dispatch/pull"
 	"github.com/majorcontext/ward/internal/identity"
 	"github.com/majorcontext/ward/internal/identity/bearer"
 	"github.com/majorcontext/ward/internal/identity/usertoken"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
 	"github.com/majorcontext/ward/internal/token"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 const maxHookBody = 64 << 10
 
 // Deps are what the handler needs. Engine is nil when no mirror is configured.
 type Deps struct {
-	Engine   *mirror.Engine
-	Land     *land.Service
-	Checks   *check.Manager
+	Engine *mirror.Engine
+	Land   *land.Service
+	Checks *check.Manager
+	// Pull is the queue of the pull repositories. It is nil when no repository has a pull runner.
+	Pull     *pull.Queue
 	Store    mirror.Store
 	Verifier *token.Verifier
 	// Human, when set, also authenticates the land routes. A caller token is tried first.
@@ -78,6 +82,8 @@ func New(d Deps) *Server {
 	s.mux.HandleFunc("POST /v1/tokens", s.createUserToken)
 	s.mux.HandleFunc("GET /v1/tokens", s.listUserTokens)
 	s.mux.HandleFunc("DELETE /v1/tokens/{id}", s.revokeUserToken)
+	s.mux.HandleFunc("POST "+runnerproto.LeasesPath, s.lease)
+	s.mux.HandleFunc("POST "+runnerproto.LeasesPath+"/{id}/renew", s.renew)
 	return s
 }
 

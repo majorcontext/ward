@@ -4,12 +4,15 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +44,12 @@ type Options struct {
 	// Concurrency is the most runs at one time. A request over the limit gets 503, and ward sends it again.
 	Concurrency int
 	WorkDir     string
+	// CacheDir is the root of the durable caches. Each repository and env gets a directory under it, so a check sees only
+	// the cache of its own repository. Empty means no cache.
+	CacheDir string
+	// Isolation is the sandbox level that Pull reports to ward, and RunnerToken returns a runner token. Only Pull uses them.
+	Isolation   runnerproto.Isolation
+	RunnerToken func(exp time.Time) (string, error)
 	Clock       check.Clock
 	Log         *slog.Logger
 	HTTP        *http.Client
@@ -105,19 +114,18 @@ func (r *Runner) ServeHTTP(w http.ResponseWriter, hr *http.Request) {
 		return
 	}
 	r.mu.Lock()
-	dup := r.running[req.RequestID]
-	r.mu.Unlock()
-	if dup {
+	if r.running[req.RequestID] {
+		r.mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	select {
 	case r.slot <- struct{}{}:
 	default:
+		r.mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	r.mu.Lock()
 	r.running[req.RequestID] = true
 	r.mu.Unlock()
 	r.wg.Add(1)
@@ -129,17 +137,18 @@ func (r *Runner) ServeHTTP(w http.ResponseWriter, hr *http.Request) {
 			r.mu.Unlock()
 			<-r.slot
 		}()
-		r.execute(req)
+		r.execute(r.ctx, req)
 	}()
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (r *Runner) execute(req runnerproto.Request) {
+// execute runs req and posts the result. It posts nothing when ctx ends first: ward sends or leases the request again.
+func (r *Runner) execute(ctx context.Context, req runnerproto.Request) {
 	res := runnerproto.Result{RequestID: req.RequestID}
 	start := r.o.Clock.Now()
-	status, headline, output, err := r.work(req)
+	status, headline, output, err := r.work(ctx, req)
 	switch {
-	case err != nil && r.ctx.Err() != nil:
+	case err != nil && ctx.Err() != nil:
 		return
 	case err != nil:
 		res.Status, res.Summary = runnerproto.Fail, clip("runner error: "+err.Error())
@@ -150,7 +159,7 @@ func (r *Runner) execute(req runnerproto.Request) {
 	r.post(req, res)
 }
 
-func (r *Runner) work(req runnerproto.Request) (status runnerproto.Status, headline, output string, err error) {
+func (r *Runner) work(ctx context.Context, req runnerproto.Request) (status runnerproto.Status, headline, output string, err error) {
 	dir, err := os.MkdirTemp(r.o.WorkDir, "check-")
 	if err != nil {
 		return "", "", "", err
@@ -163,11 +172,15 @@ func (r *Runner) work(req runnerproto.Request) (status runnerproto.Status, headl
 	if err := os.Chmod(dir, 0o777); err != nil {
 		return "", "", "", err
 	}
-	if err := r.o.Fetch(r.ctx, req, dir); err != nil {
+	if err := r.o.Fetch(ctx, req, dir); err != nil {
 		return "", "", "", fmt.Errorf("fetch tree: %w", err)
 	}
+	cache, err := r.cacheDir(req)
+	if err != nil {
+		return "", "", "", err
+	}
 	out := &tail{max: logTail}
-	o, err := r.o.Sandbox.Run(r.ctx, sandbox.Spec{Dir: dir, Argv: req.Check.Run, Timeout: time.Duration(req.Check.TimeoutSeconds) * time.Second, Output: out})
+	o, err := r.o.Sandbox.Run(ctx, sandbox.Spec{Dir: dir, Cache: cache, Argv: req.Check.Run, Timeout: time.Duration(req.Check.TimeoutSeconds) * time.Second, Output: out})
 	switch {
 	case err != nil:
 		return "", "", "", err
@@ -177,6 +190,23 @@ func (r *Runner) work(req runnerproto.Request) (status runnerproto.Status, headl
 		return runnerproto.Fail, fmt.Sprintf("exit code %d", o.ExitCode), out.String(), nil
 	}
 	return runnerproto.Pass, "exit code 0", out.String(), nil
+}
+
+// cacheDir returns the cache directory of the repository and env of req, and makes it. Two repositories never share one.
+func (r *Runner) cacheDir(req runnerproto.Request) (string, error) {
+	if r.o.CacheDir == "" {
+		return "", nil
+	}
+	dir := filepath.Join(r.o.CacheDir, digest(req.Repo), digest(req.Env))
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		return "", err
+	}
+	return dir, os.Chmod(dir, 0o777)
+}
+
+func digest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (r *Runner) post(req runnerproto.Request, res runnerproto.Result) {

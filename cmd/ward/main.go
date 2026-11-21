@@ -15,6 +15,9 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
+	"github.com/majorcontext/ward/internal/dispatch"
+	"github.com/majorcontext/ward/internal/dispatch/pull"
+	"github.com/majorcontext/ward/internal/dispatch/push"
 	"github.com/majorcontext/ward/internal/identity"
 	"github.com/majorcontext/ward/internal/identity/oidc"
 	"github.com/majorcontext/ward/internal/identity/usertoken"
@@ -64,6 +67,9 @@ func main() {
 		stop()
 		os.Exit(code)
 	}
+	if len(os.Args) > 2 && os.Args[1] == "runner" && os.Args[2] == "install" {
+		os.Exit(runRunnerInstall(os.Args[3:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) == 2 && os.Args[1] == "runner" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -72,7 +78,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version | runner | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]")
+		fmt.Fprintln(os.Stderr, "usage: ward [version | runner [install FLAGS] | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -119,7 +125,16 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	if opts.Clock != nil {
 		clock = opts.Clock
 	}
-	checks := check.New(store, cfg.Runners, clock, opts.Logger)
+	pushes, queue := push.New(cfg.Runners), pull.New(store, cfg.Runners, clock)
+	dispatch := map[string]dispatch.Dispatcher{}
+	hasPull := false
+	for _, r := range cfg.Runners {
+		dispatch[r.Repo] = pushes
+		if r.Pull() {
+			dispatch[r.Repo], hasPull = queue, true
+		}
+	}
+	checks := check.New(store, cfg.Runners, dispatch, clock, opts.Logger)
 	lands := land.New(cfg.Land, store, checks, clock, opts.Logger)
 	if err := checks.Start(ctx); err != nil {
 		return err
@@ -136,6 +151,9 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 		}
 	}
 	deps.Human = identity.Chain(viaOIDC, usertoken.Authenticator{Store: store, Now: deps.Now})
+	if hasPull {
+		deps.Pull = queue
+	}
 	var engine *mirror.Engine
 	if len(cfg.Mirror.Mirrors) > 0 {
 		engine = mirror.New(cfg.Mirror, store, opts)

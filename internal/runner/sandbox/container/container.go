@@ -92,6 +92,12 @@ func (s *Sandbox) args(name string, spec sandbox.Spec) []string {
 		"--entrypoint", spec.Argv[0],
 		"-e", "HOME=/tmp",
 		"-v", spec.Dir + ":/work", "-w", "/work"}
+	if spec.Cache != "" {
+		a = append(a, "-v", spec.Cache+":"+sandbox.CacheMount)
+		for _, e := range sandbox.CacheEnv(sandbox.CacheMount) {
+			a = append(a, "-e", e)
+		}
+	}
 	if s.cfg.Runtime != "" {
 		a = append(a, "--runtime", s.cfg.Runtime)
 	}

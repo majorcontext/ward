@@ -2,6 +2,26 @@
 
 `ward runner` receives check requests from ward, fetches the exact tree from motte, runs each check in a sandbox and posts the result. The contract is in `docs/architecture.md`, Standalone runner.
 
+## Push or pull
+
+| | Push | Pull |
+|---|---|---|
+| Who connects | ward posts each check request to the hook URL of the runner. | The runner polls ward (`POST /v1/runner/leases`), so ward never connects to it. |
+| Network | ward must reach the runner. | Outbound HTTPS from the runner to ward and to motte. Nothing inbound. |
+| `WARD_RUNNERS` entry | `repo`, `url`, `secret_file`, `env`. | `repo`, `mode: "pull"`, `kids`, optional `min_isolation`, `env`. |
+| Runner | `WARD_RUNNER_MODE=push` (default). | `WARD_RUNNER_MODE=pull`. |
+| Lost runner | ward sends the request again after the late deadline. | The lease ends when the runner stops renewing it. The same request is leased again. |
+
+Pull behind a tunnel: expose `POST /v1/runner/leases`, `POST /v1/runner/leases/{lease_id}/renew` and `POST /v1/results`. A poll lasts up to 20 seconds.
+
+A pull entry: `{"repo":"native:widgets","mode":"pull","kids":["metal-1","metal-2"],"env":"IMAGE-DIGEST"}`. The default `min_isolation` is `gvisor`.
+
+## Identity and isolation
+
+Each pull runner has its own Ed25519 key. Put the public key in `WARD_TRUSTED_KEYS` with the scopes `runner` and `check`, and the `kid` in the `kids` of each repository that the runner may serve. A runner gets only requests of those repositories. ward rejects a result from a runner that is not in `kids` of the repository, or that did not lease the request. To revoke one runner, remove its key or its `kid`: no other runner changes.
+
+The runner reports its sandbox in each poll. ward refuses a runner whose sandbox is weaker than `min_isolation` of every repository that it serves. A repository allows `container` only when its entry says `"min_isolation":"container"`. There is no global switch that lowers it.
+
 ## What you need
 
 - ward, and a `WARD_RUNNERS` entry for each repository: `{"repo":"native:widgets","url":"http://runner.internal:8081/v1/checks","secret_file":"/etc/ward/runner-hook-secret","env":"IMAGE-DIGEST"}`. Use the digest of the check image as `env`, so a new image proves each check again.
@@ -11,7 +31,31 @@
 - A container engine (`docker` or `podman`), and an OCI image in which the checks run. The image holds the tools that the checks call. The default network is `none`, so the image must hold what a check needs, or you set `WARD_RUNNER_NETWORK`.
 - For gVisor, `runsc` installed and registered as a runtime of the engine. With `WARD_RUNNER_SANDBOX=auto` the runner uses it when `runsc` is on the path. Set `gvisor` to refuse to start without it.
 
-## A Linux machine
+## The host contract
+
+A runner lives on any Linux host that provides these. Provisioning stays outside ward: use any provider, a module of your own, cloud-init, or a machine that you built by hand.
+
+- A container engine (`docker` or `podman`).
+- `runsc` registered as a runtime of the engine, and `/dev/kvm` usable by the service user.
+- A cache directory and a work directory on local disk. Not a network file system, not `tmpfs`.
+- Outbound HTTPS to ward and to motte.
+- A service user, the `ward` binary, a motte `read` grant file.
+
+## Install on a Linux machine
+
+```
+ward runner install --ward-url https://ward.example.org --kid metal-1 \
+  --motte-url https://motte.example.org --motte-grant-file /etc/ward-runner/motte-grant \
+  --image registry.example.org/check-env@sha256:...
+```
+
+The command checks the host, writes `/etc/systemd/system/ward-runner.service` and `/etc/ward-runner/runner.env`, creates the check key, the cache directory and the work directory when they are absent, and prints the `WARD_TRUSTED_KEYS` entry. It prints each missing prerequisite and exits 1. Fix those, add the key and the `kid` to ward, and run `systemctl daemon-reload && systemctl enable --now ward-runner`.
+
+## Cache
+
+With `WARD_RUNNER_CACHE_DIR` the runner keeps one directory for each repository and env across runs. The check sees it at `/cache`, read-write, and `GOCACHE`, `GOMODCACHE` and `XDG_CACHE_HOME` point into it. The sandbox of a repository mounts only its own directory, so one repository cannot read or change the cache of another.
+
+## A Linux machine by hand (push)
 
 1. Install the engine, and `runsc` if you want gVisor. Install the `ward` binary.
 2. Create the user `ward-runner` that may use the engine.

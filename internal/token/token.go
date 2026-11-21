@@ -21,6 +21,7 @@ const (
 	ScopeOperator Scope = "operator"
 	ScopeLand     Scope = "land"
 	ScopeCheck    Scope = "check"
+	ScopeRunner   Scope = "runner"
 )
 
 const prefix = "wd1."
@@ -38,7 +39,7 @@ func (c Claims) valid() bool {
 	switch c.Scope {
 	case ScopeRead, ScopeLand, ScopeCheck:
 		return c.Repo != ""
-	case ScopeOperator:
+	case ScopeOperator, ScopeRunner:
 		return true
 	}
 	return false
