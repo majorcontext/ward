@@ -68,6 +68,13 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.Mirror.Motte = mirror.MotteConfig{URL: getenv("WARD_MOTTE_URL"), Kid: getenv("WARD_MOTTE_KID"), Key: key}
 	c.Land = land.Config{URL: c.Mirror.Motte.URL, Kid: c.Mirror.Motte.Kid, Key: key}
+	if v := getenv("WARD_LAND_BATCH_MAX"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return c, errors.New("WARD_LAND_BATCH_MAX must be a positive number")
+		}
+		c.Land.BatchMax = n
+	}
 	if v := getenv("WARD_GITHUB_API_URL"); v != "" {
 		if u, err := url.Parse(v); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return c, errors.New("WARD_GITHUB_API_URL must be an http or https URL")

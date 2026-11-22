@@ -51,6 +51,12 @@ type Call struct {
 	Head      string `json:"head"`
 	Tree      string `json:"tree"`
 	BranchGen int64  `json:"branch_generation"`
+	// ID is the land id that motte sees when the call lands a batch. It is empty for a call of one land.
+	ID string `json:"id,omitempty"`
+	// Tip, FastForward and Commits are the part of a batch that belongs to this land.
+	Tip         string             `json:"tip,omitempty"`
+	FastForward bool               `json:"fast_forward,omitempty"`
+	Commits     []api.LandedCommit `json:"commits,omitempty"`
 }
 
 // Land is the record of one land. Attempt counts the times that the land reached step 5, and Call is the call of the latest. Mark is the result position after which a fail counts for this land.
@@ -83,8 +89,8 @@ type Store interface {
 	// InsertLand stores a new land. Lands of one key keep the order of insertion.
 	InsertLand(ctx context.Context, l Land) error
 	Land(ctx context.Context, id string) (Land, bool, error)
-	// NextLand returns the oldest land of the key that has not ended.
-	NextLand(ctx context.Context, key Key) (Land, bool, error)
+	// NextLands returns up to n of the oldest lands of the key that have not ended, oldest first.
+	NextLands(ctx context.Context, key Key, n int) ([]Land, error)
 	SaveLand(ctx context.Context, l Land) error
 	// UnfinishedKeys returns the key of every land that has not ended.
 	UnfinishedKeys(ctx context.Context) ([]Key, error)

@@ -48,12 +48,21 @@ func (s *Store) Land(ctx context.Context, id string) (land.Land, bool, error) {
 	return l, err == nil, err
 }
 
-func (s *Store) NextLand(ctx context.Context, key land.Key) (land.Land, bool, error) {
-	l, err := decodeLand(s.db.QueryRowContext(ctx, `SELECT body FROM lands WHERE repo = ? AND ref = ? AND ended = 0 ORDER BY seq LIMIT 1`, key.Repo, key.Ref))
-	if errors.Is(err, sql.ErrNoRows) {
-		return land.Land{}, false, nil
+func (s *Store) NextLands(ctx context.Context, key land.Key, n int) ([]land.Land, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT body FROM lands WHERE repo = ? AND ref = ? AND ended = 0 ORDER BY seq LIMIT ?`, key.Repo, key.Ref, n)
+	if err != nil {
+		return nil, err
 	}
-	return l, err == nil, err
+	defer func() { _ = rows.Close() }()
+	var out []land.Land
+	for rows.Next() {
+		l, err := decodeLand(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) SaveLand(ctx context.Context, l land.Land) error {

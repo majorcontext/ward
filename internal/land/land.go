@@ -29,6 +29,9 @@ const (
 	// DefaultReadBudget is the time limit of one read of motte. A replica that opens its packs on first use needs more than
 	// the 2 s default of the client. The limit stays below the 35 s that the client gives a land call.
 	DefaultReadBudget = 10 * time.Second
+	// DefaultBatchMax is the most lands that one check run judges when Config.BatchMax is zero.
+	DefaultBatchMax = 8
+	startBatch      = 2
 )
 
 // ErrNoMergeBase means that the first-parent chain of the branch never meets the first-parent chain of the target ref.
@@ -41,6 +44,8 @@ type Config struct {
 	Key ed25519.PrivateKey
 	// ReadBudget is the time limit of one read of motte. Zero means DefaultReadBudget.
 	ReadBudget time.Duration
+	// BatchMax is the most lands that one check run judges. Zero means DefaultBatchMax, and 1 judges each land alone.
+	BatchMax int
 }
 
 // Request names the branch to land and where.
@@ -62,6 +67,7 @@ type Service struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	workers map[Key]chan struct{}
+	sizes   map[Key]int
 	changed chan struct{}
 	wg      sync.WaitGroup
 }
@@ -74,7 +80,7 @@ func New(cfg Config, store Store, checks *check.Manager, clock check.Clock, log 
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Service{cfg: cfg, store: store, checks: checks, clock: clock, log: log, workers: map[Key]chan struct{}{}, changed: make(chan struct{})}
+	return &Service{cfg: cfg, store: store, checks: checks, clock: clock, log: log, workers: map[Key]chan struct{}{}, sizes: map[Key]int{}, changed: make(chan struct{})}
 }
 
 // Start resumes every land that has not ended. The queues stop when ctx ends.
@@ -201,7 +207,7 @@ func (s *Service) retire(k Key, wake chan struct{}) bool {
 func (s *Service) work(k Key, wake chan struct{}) {
 	defer s.wg.Done()
 	for {
-		l, ok, err := s.store.NextLand(s.ctx, k)
+		ls, err := s.store.NextLands(s.ctx, k, s.batchMax())
 		switch {
 		case err != nil:
 			if s.ctx.Err() == nil {
@@ -209,20 +215,60 @@ func (s *Service) work(k Key, wake chan struct{}) {
 			}
 			s.retireNow(k)
 			return
-		case !ok:
+		case len(ls) == 0:
 			if s.retire(k, wake) {
 				return
 			}
 			continue
 		}
-		if err := s.run(l); err != nil {
+		if err := s.step(k, ls); err != nil {
 			if s.ctx.Err() == nil {
-				s.log.Error("record the land", "land", l.ID, "error", err.Error())
+				s.log.Error("record the land", "land", ls[0].ID, "error", err.Error())
 			}
 			s.retireNow(k)
 			return
 		}
 	}
+}
+
+func (s *Service) batchMax() int { return cmp.Or(s.cfg.BatchMax, DefaultBatchMax) }
+
+// size returns the number of lands that the next check run of k may judge.
+func (s *Service) size(k Key) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return min(cmp.Or(s.sizes[k], startBatch), s.batchMax())
+}
+
+// adapt grows the batch of k by one after a pass and halves it after a failed check.
+func (s *Service) adapt(k Key, passed bool) {
+	n := s.size(k)
+	if passed {
+		n++
+	} else {
+		n /= 2
+	}
+	s.mu.Lock()
+	s.sizes[k] = min(max(n, 1), s.batchMax())
+	s.mu.Unlock()
+}
+
+// step runs the oldest lands of k, as many as the batch size allows, to their end or back to the queue.
+func (s *Service) step(k Key, ls []Land) error {
+	if ls[0].Call != nil && ls[0].State == Landing && ls[0].Call.ID != "" {
+		return s.resumeBatch(k, ls)
+	}
+	if ls[0].Call != nil && ls[0].State == Landing {
+		ls = ls[:1]
+	}
+	if ls = ls[:min(len(ls), s.size(k))]; len(ls) > 1 {
+		return s.runBatch(k, ls)
+	}
+	checkFailed, err := s.run(ls[0])
+	if err == nil && s.ctx.Err() == nil {
+		s.adapt(k, !checkFailed)
+	}
+	return err
 }
 
 func (s *Service) retireNow(k Key) {

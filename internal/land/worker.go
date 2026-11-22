@@ -39,8 +39,8 @@ type outcome struct {
 func candidateRef(id string) string { return "refs/ward/candidates/" + id }
 
 // run takes one land to its end. A cancelled context leaves the land as it is, and a restart resumes it.
-// It returns an error only when the end of the land could not be recorded.
-func (s *Service) run(l Land) error {
+// It reports whether a check failed the land. It returns an error only when the end of the land could not be recorded.
+func (s *Service) run(l Land) (bool, error) {
 	for {
 		out := s.attempt(&l)
 		if out.kind == retry {
@@ -55,9 +55,9 @@ func (s *Service) run(l Land) error {
 			}
 		}
 		if out.kind == aborted {
-			return out.storeErr
+			return false, out.storeErr
 		}
-		return s.finish(&l, out)
+		return out.kind == failed && out.err.Code == CodeCheckFailed, s.finish(&l, out)
 	}
 }
 
@@ -173,29 +173,35 @@ func (s *Service) check(ctx context.Context, reader *client.Client, l *Land, tip
 	if err := s.save(l, Checking); err != nil {
 		return s.storeFailure(err)
 	}
-	return s.await(ctx, l, checks, candidate)
+	return s.await(ctx, l.Repo, tree, candidate, l.Mark, checks, func(vs []check.Verdict) error {
+		for i, v := range vs {
+			l.Checks[i].State = v.State
+		}
+		return s.save(l, l.State)
+	})
 }
 
-func (s *Service) await(ctx context.Context, l *Land, checks []check.Check, candidate string) outcome {
+// await waits until every check has a verdict for tree and returns the first fail. It sends a request for each pending
+// check, and it calls report with the verdicts after each read.
+func (s *Service) await(ctx context.Context, repo, tree, candidate string, mark int64, checks []check.Check, report func([]check.Verdict) error) outcome {
 	for {
 		changed := s.checks.Changed()
 		verdicts := make([]check.Verdict, len(checks))
 		pending := false
 		for i, c := range checks {
-			v, err := s.checks.Verdict(ctx, l.Repo, l.Tree, c, l.Mark)
+			v, err := s.checks.Verdict(ctx, repo, tree, c, mark)
 			if err != nil {
 				return s.storeFailure(err)
 			}
 			verdicts[i] = v
-			l.Checks[i].State = v.State
 			if v.State == check.Pending {
 				pending = true
-				if err := s.checks.Ensure(ctx, l.Repo, l.Tree, candidate, c); err != nil {
+				if err := s.checks.Ensure(ctx, repo, tree, candidate, c); err != nil {
 					return s.storeFailure(err)
 				}
 			}
 		}
-		if err := s.save(l, l.State); err != nil {
+		if err := report(verdicts); err != nil {
 			return s.storeFailure(err)
 		}
 		for i, v := range verdicts {
