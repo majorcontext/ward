@@ -455,7 +455,7 @@ func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) 
 func (h *harness) queueBehindACheck(p *wardProc, run *fakeRunner, base string, names ...string) (first landState, req runnerRequest, queued []landState) {
 	h.t.Helper()
 	for _, n := range append([]string{"a"}, names...) {
-		h.branchFrom(base, "feature/"+n, n+".txt", n+"\n")
+		h.branchFrom(base, "feature/"+n, strings.TrimRight(n, "0123456789")+".txt", n+"\n")
 	}
 	first = h.postLand(p, "main", "feature/a", nil)
 	req = run.next()
@@ -506,5 +506,23 @@ func TestLandFailsOnlyTheChangeThatBreaksTheBatchAndLandsTheRest(t *testing.T) {
 		h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:d.txt") != "d" || d.Tip != h.mainTip() ||
 		gitErr(h.work, "cat-file", "-e", "FETCH_HEAD:c.txt") == nil || len(run.reqs) != 0 {
 		t.Fatalf("b = %+v, c = %+v, d = %+v", b, c, d)
+	}
+}
+
+func TestLandFailsAFirstLandThatConflictsAndStillLandsTheRestOfTheBatch(t *testing.T) {
+	h, run := newLandHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	base := h.seedChecked(unitChecks)
+	first, req, queued := h.queueBehindACheck(p, run, base, "a2", "b", "c")
+	p.answer(req, "pass", "ok")
+	h.awaitLand(p, first.ID, "landed")
+
+	conflict := h.awaitLand(p, queued[0].ID, "failed")
+	p.answer(run.next(), "pass", "ok")
+	h.awaitLand(p, queued[1].ID, "landed")
+	h.awaitLand(p, queued[2].ID, "landed")
+	h.git("fetch", "-q", "origin", "main")
+	if conflict.Error.Code != "land_conflict" || h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" || len(run.reqs) != 0 {
+		t.Fatalf("conflicting land = %+v", conflict)
 	}
 }

@@ -1,9 +1,11 @@
 package land
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
@@ -21,6 +23,14 @@ type member struct {
 	commits []api.LandedCommit
 }
 
+func scratchRef(id string) string { return candidateRef("batch-" + id) }
+
+func (s *Service) dropRef(reader, merger *client.Client, name string) {
+	if ref, err := reader.Ref(s.ctx, name); err == nil {
+		_ = merger.DeleteRef(s.ctx, name, ref.Generation)
+	}
+}
+
 func lands(ms []*member) []*Land {
 	out := make([]*Land, len(ms))
 	for i, m := range ms {
@@ -35,12 +45,8 @@ func lands(ms []*member) []*Land {
 func (s *Service) runBatch(k Key, ls []Land) error {
 	ctx := s.ctx
 	reader, merger := s.client("read", k.Repo), s.client("merge", k.Repo)
-	name := candidateRef(ls[0].ID)
-	defer func() {
-		if ref, err := reader.Ref(ctx, name); err == nil {
-			_ = merger.DeleteRef(ctx, name, ref.Generation)
-		}
-	}()
+	name := scratchRef(ls[0].ID)
+	defer s.dropRef(reader, merger, name)
 	tip, err := reader.Ref(ctx, k.Ref)
 	if err != nil {
 		return s.settle(ptrs(ls), s.refusal(err))
@@ -209,7 +215,7 @@ func (s *Service) begin(ctx context.Context, ms []*member, checks []check.Check)
 		}
 	}
 	for _, m := range ms {
-		m.l.Mark, m.l.Tree, m.l.Checks = mark, m.tree, make([]CheckState, len(checks))
+		m.l.Mark, m.l.Tree, m.l.Call, m.l.Checks = mark, m.tree, nil, make([]CheckState, len(checks))
 		for i, c := range checks {
 			m.l.Checks[i] = CheckState{Name: c.Name, State: check.Pending}
 		}
@@ -221,14 +227,15 @@ func (s *Service) begin(ctx context.Context, ms []*member, checks []check.Check)
 }
 
 // commit lands the checked prefix of the batch as one fast-forward of the tip, so the ref only holds a tree that passed.
-// It stores the call of each land first, so that a restart repeats the same call.
+// It stores the call of each land first, the first land last, so that a restart finds the whole batch or none of it.
 func (s *Service) commit(ctx context.Context, merger *client.Client, k Key, ms []*member, tip string) error {
 	for _, m := range ms {
 		m.l.Attempt++
 	}
 	last := ms[len(ms)-1]
 	id := fmt.Sprintf("%s-b%d", ms[0].l.ID, ms[0].l.Attempt)
-	for _, m := range ms {
+	for i := len(ms) - 1; i >= 0; i-- {
+		m := ms[i]
 		m.l.Call = &Call{Base: tip, Head: last.commit, Tree: last.tree, BranchGen: m.gen, ID: id, Tip: m.commit, FastForward: m.ff, Commits: m.commits}
 		if err := s.save(m.l, Landing); err != nil {
 			return err
@@ -245,7 +252,9 @@ func (s *Service) resumeBatch(k Key, ls []Land) error {
 			group = append(group, &ls[i])
 		}
 	}
-	return s.sendBatch(s.ctx, s.client("merge", k.Repo), k, group)
+	reader, merger := s.client("read", k.Repo), s.client("merge", k.Repo)
+	defer s.dropRef(reader, merger, scratchRef(group[0].ID))
+	return s.sendBatch(s.ctx, merger, k, group)
 }
 
 // sendBatch is the land call of motte for a batch. Motte answers a repeat of the same id with the first result.
@@ -254,9 +263,19 @@ func (s *Service) sendBatch(ctx context.Context, merger *client.Client, k Key, g
 	res, err := merger.Land(ctx, k.Repo, api.LandRequest{ID: c.ID, Ref: k.Ref, Base: c.Base, Head: c.Head, ExpectTree: c.Tree})
 	switch {
 	case err == nil:
+		moved := map[string]string{}
+		for _, c := range res.Commits {
+			moved[c.Old] = c.New
+		}
 		for _, l := range group {
 			own := l.Call
 			resp := api.LandResponse{Tip: own.Tip, Generation: res.Generation, FastForward: own.FastForward, Commits: own.Commits}
+			if !res.FastForward {
+				resp.Tip, resp.Commits = cmp.Or(moved[own.Tip], own.Tip), slices.Clone(own.Commits)
+				for i, c := range resp.Commits {
+					resp.Commits[i].New = cmp.Or(moved[c.New], c.New)
+				}
+			}
 			if err := s.finish(l, outcome{kind: landed, landed: resp, branchGen: own.BranchGen}); err != nil {
 				return err
 			}
