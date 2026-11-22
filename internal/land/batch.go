@@ -196,7 +196,10 @@ func (s *Service) add(ctx context.Context, reader, merger *client.Client, l *Lan
 	}
 	c, err := reader.Commit(ctx, res.Tip)
 	if err != nil {
-		return nil, s.refusal(err)
+		if out := s.refusal(err); out.kind != failed {
+			return nil, out
+		}
+		return nil, outcome{kind: retry, retryCode: CodeInternal}
 	}
 	return &member{l: l, gen: branch.Generation, commit: res.Tip, tree: c.Tree, ff: res.FastForward, commits: res.Commits}, outcome{}
 }
@@ -285,6 +288,11 @@ func (s *Service) sendBatch(ctx context.Context, merger *client.Client, k Key, g
 		return s.settle(group, outcome{kind: retry, retryCode: CodeTimeout, keepCall: true})
 	case errors.Is(err, client.ErrLandConflict):
 		return s.settle(group, outcome{kind: retry, retryCode: CodeStale})
+	case errors.Is(err, client.ErrLandInvalid) && len(group) > 1:
+		s.mu.Lock()
+		s.sizes[k] = 1
+		s.mu.Unlock()
+		return s.settle(group, outcome{kind: retry, retryCode: CodeInvalid})
 	}
 	return s.settle(group, s.refusal(err))
 }
