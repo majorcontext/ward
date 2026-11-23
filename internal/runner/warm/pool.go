@@ -87,7 +87,7 @@ func (f *Fetcher) update(ctx context.Context, r *repo, dir, index, from, to stri
 func (f *Fetcher) refill(r *repo, base string) {
 	r.pmu.Lock()
 	need := f.cfg.PoolSize - len(r.slots) - r.building
-	if need <= 0 || f.ctx.Err() != nil {
+	if need <= 0 || f.closed() {
 		r.pmu.Unlock()
 		return
 	}
@@ -96,21 +96,28 @@ func (f *Fetcher) refill(r *repo, base string) {
 	f.mu.Lock()
 	r.busy++
 	f.mu.Unlock()
-	f.later(func() {
-		defer f.release(r)
-		for range need {
-			s, err := f.build(f.ctx, r, base)
-			r.pmu.Lock()
-			r.building--
-			if err == nil {
-				r.slots = append(r.slots, s)
-			}
-			r.pmu.Unlock()
-			if err != nil && f.ctx.Err() == nil {
-				f.cfg.Log.Warn("ready checkout not built", "repo", r.name, "error", err.Error())
-			}
+	if !f.later(func(ctx context.Context) { f.fill(ctx, r, base, need) }) {
+		r.pmu.Lock()
+		r.building -= need
+		r.pmu.Unlock()
+		f.release(r)
+	}
+}
+
+func (f *Fetcher) fill(ctx context.Context, r *repo, base string, need int) {
+	defer f.release(r)
+	for range need {
+		s, err := f.build(ctx, r, base)
+		r.pmu.Lock()
+		r.building--
+		if err == nil {
+			r.slots = append(r.slots, s)
 		}
-	})
+		r.pmu.Unlock()
+		if err != nil && ctx.Err() == nil {
+			f.cfg.Log.Warn("ready checkout not built", "repo", r.name, "error", err.Error())
+		}
+	}
 }
 
 func (f *Fetcher) build(ctx context.Context, r *repo, base string) (slot, error) {
@@ -172,7 +179,7 @@ func (f *Fetcher) Changed(repo string) {
 		names = f.Repos()
 	}
 	for _, n := range names {
-		f.later(func() { f.Sync(f.ctx, n) })
+		f.later(func(ctx context.Context) { f.Sync(ctx, n) })
 	}
 }
 

@@ -91,17 +91,18 @@ type repo struct {
 
 // Fetcher serves trees from the warm cache. Fetch has the signature of runner.Options.Fetch.
 type Fetcher struct {
-	cfg Config
-	git gitCmd
-	ctx context.Context
-	wg  sync.WaitGroup
+	cfg  Config
+	git  gitCmd
+	stop chan struct{}
+	once sync.Once
+	wg   sync.WaitGroup
 
 	mu    sync.Mutex
 	repos map[string]*repo
 }
 
-// New makes a fetcher. Background work stops when ctx ends; call Wait after that.
-func New(ctx context.Context, cfg Config) (*Fetcher, error) {
+// New makes a fetcher. It starts no background work until a request or a sync needs it. Close stops that work.
+func New(cfg Config) (*Fetcher, error) {
 	if cfg.Dir == "" || cfg.PoolDir == "" || cfg.Remote == nil {
 		return nil, errors.New("warm: Dir, PoolDir and Remote are required")
 	}
@@ -120,14 +121,14 @@ func New(ctx context.Context, cfg Config) (*Fetcher, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
-	out, err := exec.CommandContext(ctx, "git", "--version").Output()
+	out, err := exec.Command("git", "--version").Output()
 	if err != nil {
 		return nil, fmt.Errorf("warm: git --version: %w", err)
 	}
 	if err := CheckGitVersion(string(out)); err != nil {
 		return nil, fmt.Errorf("warm: %w", err)
 	}
-	f := &Fetcher{cfg: cfg, git: gitCmd{home: cfg.Dir}, ctx: ctx, repos: map[string]*repo{}}
+	f := &Fetcher{cfg: cfg, git: gitCmd{home: cfg.Dir}, stop: make(chan struct{}), repos: map[string]*repo{}}
 	for _, d := range []string{cfg.Dir, cfg.PoolDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
@@ -164,8 +165,36 @@ func (f *Fetcher) reset() error {
 	return nil
 }
 
-// Wait returns when the background work has ended. Call it after the context of New ends.
+// Wait returns when the background work that is under way has ended.
 func (f *Fetcher) Wait() { f.wg.Wait() }
+
+// Close cancels the background work, refuses new work and waits for the work that is under way. It is safe to call twice.
+func (f *Fetcher) Close() {
+	f.once.Do(func() { close(f.stop) })
+	f.wg.Wait()
+}
+
+func (f *Fetcher) closed() bool {
+	select {
+	case <-f.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// work returns the context of one piece of background work. Close cancels it.
+func (f *Fetcher) work() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-f.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
 
 // Repos returns the repositories that have a clone.
 func (f *Fetcher) Repos() []string {
@@ -378,7 +407,7 @@ func (f *Fetcher) ensure(ctx context.Context, r *repo) error {
 	if err := os.Rename(tmp, r.path); err != nil {
 		return err
 	}
-	f.later(func() { f.Sweep() })
+	f.later(func(context.Context) { f.Sweep() })
 	return nil
 }
 
@@ -404,13 +433,21 @@ func (f *Fetcher) fetchCommit(ctx context.Context, r *repo, req runnerproto.Requ
 	return nil
 }
 
-// later runs fn in the background, tracked by Wait.
-func (f *Fetcher) later(fn func()) {
+// later runs fn in the background with a context that Close cancels, tracked by Wait. It reports false after Close.
+func (f *Fetcher) later(fn func(ctx context.Context)) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed() {
+		return false
+	}
 	f.wg.Add(1)
 	go func() {
 		defer f.wg.Done()
-		fn()
+		ctx, cancel := f.work()
+		defer cancel()
+		fn(ctx)
 	}()
+	return true
 }
 
 // Run starts each watcher and syncs the clone of each reported repository. It returns when ctx ends. A sweep runs

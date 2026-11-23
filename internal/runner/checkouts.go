@@ -97,7 +97,7 @@ func (c *Config) StartCheckouts(ctx context.Context, log *slog.Logger) (wait fun
 	}
 	k := c.Checkouts
 	k.Warm.Fallback, k.Warm.Log = c.Options.Fetch, log
-	f, err := warm.New(ctx, k.Warm)
+	f, err := warm.New(k.Warm)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +112,7 @@ func (c *Config) StartCheckouts(ctx context.Context, log *slog.Logger) (wait fun
 	go func() {
 		defer wg.Done()
 		f.Run(ctx, ws...)
+		f.Close()
 	}()
-	return func() { wg.Wait(); f.Wait() }, nil
+	return wg.Wait, nil
 }

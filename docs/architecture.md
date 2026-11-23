@@ -463,6 +463,8 @@ Isolation. The sandbox mounts only the check directory, as before. The directory
 
 Bounds. A clone with no running request, sync or build is idle. When a new repository would make the count pass `WARD_RUNNER_CHECKOUT_MAX_REPOS`, the runner removes the idle repository that it used least recently, with its clone and ready checkouts. It does the same while the size of the clones and ready checkouts passes `WARD_RUNNER_CHECKOUT_MAX_BYTES`, after each new clone and every 10 minutes. `git` runs its own `gc --auto` in the fetch.
 
+Lifetime. A sync and a build of ready checkouts run in the background. `Fetcher.Close` cancels them, kills their git process groups, refuses new work and waits for the work under way; `ward runner` calls it when its context ends. The fetcher holds no context.
+
 Recovery. A failure of a local git command (not of a command that talks to the remote) removes the clone and its ready checkouts, makes a new clone and tries the request once more. A failure that remains, and a failure of a command that talks to the remote, run the fallback: the tree and blob routes. The runner logs each of them with the repository and the error. A git error holds no remote URL: the runner replaces the URL, its host and its user information with `<remote>`, and any other URL with `<url>`, in the command line and the output that the error carries. The error reaches the log and the `runner error:` summary in that form only.
 
 ### Runner host

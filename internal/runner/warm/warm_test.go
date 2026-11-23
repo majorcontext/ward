@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,12 +75,11 @@ func newFetcher(t *testing.T, ups map[string]upstream, change func(*warm.Config)
 	if change != nil {
 		change(&cfg)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	f, err := warm.New(ctx, cfg)
+	f, err := warm.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cancel(); f.Wait() })
+	t.Cleanup(f.Close)
 	return f, root
 }
 
@@ -362,7 +362,7 @@ func TestNewRefusesAnOldGit(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	root := t.TempDir()
-	_, err := warm.New(t.Context(), warm.Config{Dir: root + "/c", PoolDir: root + "/p", Remote: func(string) (string, error) { return "", nil }})
+	_, err := warm.New(warm.Config{Dir: root + "/c", PoolDir: root + "/p", Remote: func(string) (string, error) { return "", nil }})
 	if err == nil || !strings.Contains(err.Error(), "2.31") {
 		t.Errorf("error %v, want one that names git 2.31", err)
 	}
@@ -462,4 +462,59 @@ func TestStalledSyncDoesNotBlockACachedCommit(t *testing.T) {
 	}
 	close(release)
 	<-synced
+}
+
+func TestCloseStopsBackgroundWork(t *testing.T) {
+	t.Parallel()
+	u := newUpstream(t)
+	c, tree := u.commit("main", map[string]string{"a": "1"})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- struct{}{}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+	var hang atomic.Bool
+	var calls atomic.Int32
+	f, _ := newFetcher(t, map[string]upstream{"r": u}, func(cfg *warm.Config) {
+		cfg.Remote = func(string) (string, error) {
+			calls.Add(1)
+			if hang.Load() {
+				return "http://" + ln.Addr().String() + "/x.git", nil
+			}
+			return "file://" + u.bare, nil
+		}
+	})
+	if _, err := fetch(t, f, "r", c, tree); err != nil {
+		t.Fatal(err)
+	}
+	f.Wait()
+	hang.Store(true)
+	f.Changed("r")
+	<-accepted
+	closed := make(chan struct{})
+	go func() { f.Close(); close(closed) }()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("Close does not end a sync that waits for the remote")
+	}
+	before := calls.Load()
+	f.Changed("r")
+	f.Wait()
+	if calls.Load() != before {
+		t.Error("a change after Close started a sync")
+	}
 }
