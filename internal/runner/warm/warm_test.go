@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/majorcontext/ward/internal/runner/warm"
 	"github.com/majorcontext/ward/runnerproto"
@@ -421,4 +423,43 @@ func TestFileReplacingADirectoryIsKept(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStalledSyncDoesNotBlockACachedCommit(t *testing.T) {
+	t.Parallel()
+	u := newUpstream(t)
+	c, tree := u.commit("main", map[string]string{"a": "1"})
+	var stall atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	f, _ := newFetcher(t, map[string]upstream{"r": u}, func(cfg *warm.Config) {
+		cfg.Remote = func(string) (string, error) {
+			if stall.Load() {
+				close(entered)
+				<-release
+			}
+			return "file://" + u.bare, nil
+		}
+	})
+	if _, err := fetch(t, f, "r", c, tree); err != nil {
+		t.Fatal(err)
+	}
+	f.Wait()
+	stall.Store(true)
+	synced := make(chan struct{})
+	go func() { f.Sync(t.Context(), "r"); close(synced) }()
+	<-entered
+	got := make(chan error, 1)
+	go func() { _, err := fetch(t, f, "r", c, tree); got <- err }()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-ctx.Done():
+		t.Error("a request for a cached commit waits for a stalled sync")
+	}
+	close(release)
+	<-synced
 }

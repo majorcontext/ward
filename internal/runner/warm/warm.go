@@ -336,8 +336,20 @@ func (f *Fetcher) remote(ctx context.Context, r *repo, name string) (url string,
 	return url, o, nil
 }
 
+// cloned reports whether the clone exists. It takes only the read lock, so a request for a cached commit never waits for
+// a sync that holds it too.
+func (f *Fetcher) cloned(r *repo) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, err := os.Stat(filepath.Join(r.path, repoMarker))
+	return err == nil
+}
+
 // ensure makes the clone when it is missing.
 func (f *Fetcher) ensure(ctx context.Context, r *repo) error {
+	if f.cloned(r) {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, err := os.Stat(filepath.Join(r.path, repoMarker)); err == nil {
