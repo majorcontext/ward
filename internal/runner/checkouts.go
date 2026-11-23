@@ -105,7 +105,7 @@ func (c *Config) StartCheckouts(ctx context.Context, log *slog.Logger) (wait fun
 	ws := []warm.Watcher{periodic.Watcher{Repos: f.Repos, Every: k.SyncEvery, Clock: check.RealClock()}}
 	if k.EventsFile != "" {
 		grant := func(context.Context) (string, error) { return readText(k.EventsFile) }
-		ws = append(ws, motteevents.Watcher{Client: client.New(k.MotteURL, grant), Poll: eventsPoll, Clock: check.RealClock()})
+		ws = append(ws, &motteevents.Watcher{Client: client.New(k.MotteURL, grant), Poll: eventsPoll, Clock: check.RealClock()})
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
