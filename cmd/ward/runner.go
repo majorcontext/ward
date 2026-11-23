@@ -29,6 +29,12 @@ func runRunner(ctx context.Context, getenv func(string) string, ln net.Listener,
 	cfg.Options.Log = log
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	waitCheckouts, err := cfg.StartCheckouts(runCtx, log)
+	if err != nil {
+		fmt.Fprintln(stderr, "ward runner:", err)
+		return 1
+	}
+	defer func() { cancel(); waitCheckouts() }()
 	r := runner.New(runCtx, cfg.Options)
 	if cfg.Pull {
 		log.Info("ward runner started", "mode", "pull", "sandbox", cfg.SandboxKind)
