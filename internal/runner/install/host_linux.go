@@ -38,6 +38,10 @@ func SystemHost() Host {
 			return uid, gid, nil
 		},
 		HasSystemd: func() bool { _, err := os.Stat("/run/systemd/system"); return err == nil },
+		GitVersion: func() (string, error) {
+			out, err := exec.Command("git", "--version").Output()
+			return string(out), err
+		},
 	}
 }
 

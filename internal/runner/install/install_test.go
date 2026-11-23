@@ -33,6 +33,12 @@ func host(missing ...string) install.Host {
 		},
 		LookupUser: func(string) (int, int, error) { return os.Getuid(), os.Getgid(), err("user") },
 		HasSystemd: func() bool { return !gone["systemd"] },
+		GitVersion: func() (string, error) {
+			if gone["oldgit"] {
+				return "git version 2.30.2", nil
+			}
+			return "git version 2.43.0", nil
+		},
 	}
 }
 
@@ -66,5 +72,11 @@ func TestInstallWritesTheUnitAndNamesWhatTheHostLacks(t *testing.T) {
 	missing, err = install.Run(opts, host("docker", "runsc", "git", "kvm", "disk", "user", "systemd"), &out)
 	if err != nil || len(missing) != 10 {
 		t.Errorf("empty host: %d missing, error %v:\n%s", len(missing), err, out.String())
+	}
+
+	opts.GrantFile = grant
+	out.Reset()
+	if missing, err = install.Run(opts, host("oldgit"), &out); err != nil || len(missing) != 1 || !strings.Contains(missing[0], "2.31") {
+		t.Errorf("old git: missing %v, error %v", missing, err)
 	}
 }

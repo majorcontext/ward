@@ -7,10 +7,32 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/majorcontext/ward/internal/procgroup"
 )
+
+// MinGit is the oldest git that the warm path runs: the environment variables GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and
+// GIT_CONFIG_VALUE_n, which carry the credential header, need git 2.31.
+const MinGit = "2.31"
+
+var versionText = regexp.MustCompile(`git version (\d+)\.(\d+)`)
+
+// CheckGitVersion fails when the output of git --version names a git older than MinGit.
+func CheckGitVersion(out string) error {
+	m := versionText.FindStringSubmatch(out)
+	if m == nil {
+		return fmt.Errorf("the output of git --version is not a version: %q", strings.TrimSpace(out))
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major < 2 || major == 2 && minor < 31 {
+		return fmt.Errorf("git %s.%s is too old: the warm checkouts need git %s or later", m[1], m[2], MinGit)
+	}
+	return nil
+}
 
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 

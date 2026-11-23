@@ -15,6 +15,7 @@ import (
 	"text/template"
 
 	"github.com/majorcontext/ward/internal/config"
+	"github.com/majorcontext/ward/internal/runner/warm"
 )
 
 // Options say how the runner is set up. WardURL, Kid, MotteURL, GrantFile and Image are required.
@@ -45,6 +46,8 @@ type Host struct {
 	FSType     func(path string) (string, error)
 	LookupUser func(name string) (uid, gid int, err error)
 	HasSystemd func() bool
+	// GitVersion returns the output of git --version.
+	GitVersion func() (string, error)
 }
 
 // notLocalDisk are the file systems that a durable cache must not live on: a network hit is slower than a build, and tmpfs
@@ -106,6 +109,10 @@ func Run(o Options, h Host, out io.Writer) (missing []string, err error) {
 	}
 	if p, err := h.LookPath("git"); err != nil {
 		miss("git is not on the path; the runner needs it for the warm checkouts")
+	} else if out, err := h.GitVersion(); err != nil {
+		miss("git --version failed: %v", err)
+	} else if err := warm.CheckGitVersion(out); err != nil {
+		miss("%v", err)
 	} else {
 		ok("git %s", p)
 	}

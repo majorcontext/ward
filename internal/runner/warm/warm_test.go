@@ -334,3 +334,31 @@ func TestEmptyDirectoriesFollowTheTree(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckGitVersion(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		out string
+		ok  bool
+	}{
+		{"git version 2.30.2", false}, {"git version 1.9.0", false}, {"git version 2.31.0", true},
+		{"git version 2.39.5 (Apple Git-154)", true}, {"git version 3.0.1", true}, {"not git", false},
+	} {
+		if err := warm.CheckGitVersion(tc.out); (err == nil) != tc.ok {
+			t.Errorf("%q: error %v, want ok %v", tc.out, err, tc.ok)
+		}
+	}
+}
+
+func TestNewRefusesAnOldGit(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git version 2.30.2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	root := t.TempDir()
+	_, err := warm.New(t.Context(), warm.Config{Dir: root + "/c", PoolDir: root + "/p", Remote: func(string) (string, error) { return "", nil }})
+	if err == nil || !strings.Contains(err.Error(), "2.31") {
+		t.Errorf("error %v, want one that names git 2.31", err)
+	}
+}

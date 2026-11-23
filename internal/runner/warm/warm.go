@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -118,6 +119,13 @@ func New(ctx context.Context, cfg Config) (*Fetcher, error) {
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
+	}
+	out, err := exec.CommandContext(ctx, "git", "--version").Output()
+	if err != nil {
+		return nil, fmt.Errorf("warm: git --version: %w", err)
+	}
+	if err := CheckGitVersion(string(out)); err != nil {
+		return nil, fmt.Errorf("warm: %w", err)
 	}
 	f := &Fetcher{cfg: cfg, git: gitCmd{home: cfg.Dir}, ctx: ctx, repos: map[string]*repo{}}
 	for _, d := range []string{cfg.Dir, cfg.PoolDir} {

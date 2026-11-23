@@ -433,7 +433,7 @@ A runner refuses a request with a wrong signature with 401 and a request whose `
 | `WARD_RUNNER_CONCURRENCY` | Most checks at one time. Default 1. A request over the limit gets 503, and ward sends it again. |
 | `WARD_RUNNER_WORK_DIR` | Directory of the tree checkouts. Default the temporary directory. |
 | `WARD_RUNNER_CACHE_DIR` | Root of the durable caches. Empty means no cache. |
-| `WARD_RUNNER_CHECKOUT_DIR` | Directory of the bare clones. Setting it turns on the warm checkouts (see Warm checkouts) and needs `git` on the path. Empty means the runner reads each tree with the tree and blob routes. |
+| `WARD_RUNNER_CHECKOUT_DIR` | Directory of the bare clones. Setting it turns on the warm checkouts (see Warm checkouts) and needs `git` 2.31 or later on the path. Empty means the runner reads each tree with the tree and blob routes. |
 | `WARD_RUNNER_CHECKOUT_POOL` | Ready checkouts for each repository. Default 2. |
 | `WARD_RUNNER_CHECKOUT_MAX_REPOS`, `WARD_RUNNER_CHECKOUT_MAX_BYTES` | Most repositories (default 16) and most bytes (default 20 GiB) of the clones and ready checkouts together. |
 | `WARD_RUNNER_CHECKOUT_SYNC_EVERY` | Interval of the periodic sync of every clone. Default `1m`. At least `1s`. |
@@ -472,7 +472,7 @@ A runner lives on any Linux host that meets this contract. ward holds no provide
 - Linux with a container engine (`docker` or `podman`).
 - `runsc` (gVisor) registered as a runtime of the engine, and `/dev/kvm` usable by the service user for its KVM platform.
 - A cache directory and a work directory on local disk, not on a network file system and not on `tmpfs`.
-- `git` 2.29 or later on the path of the service, when `WARD_RUNNER_CHECKOUT_DIR` is set. The checkout directory is on local disk too.
+- `git` 2.31 or later on the path of the service, when `WARD_RUNNER_CHECKOUT_DIR` is set (the credential header travels in `GIT_CONFIG_COUNT` and its variables, which need 2.31). `ward runner` fails at start with an error that names the version when git is older, and `ward runner install` lists it as missing. The runner never falls back to the route fetch for an old git. The checkout directory is on local disk too.
 - Outbound HTTPS to ward and to motte. Nothing inbound.
 - A user for the service, the `ward` binary, a motte `read` grant file, and the check key file of the runner.
 
