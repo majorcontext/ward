@@ -63,7 +63,8 @@ func (u upstream) commit(refspec string, files map[string]string) (commit, tree 
 	u.git("add", "-A")
 	u.git("commit", "-q", "-m", "c", "--allow-empty")
 	u.git("push", "-q", "origin", "HEAD:"+refspec)
-	return u.git("rev-parse", "HEAD"), u.git("rev-parse", "HEAD^{tree}")
+	ids := strings.Fields(u.git("rev-parse", "HEAD", "HEAD^{tree}"))
+	return ids[0], ids[1]
 }
 
 func newFetcher(t *testing.T, ups map[string]upstream, change func(*warm.Config)) (*warm.Fetcher, string) {
@@ -394,34 +395,26 @@ func TestGitErrorsHoldNoRemoteURL(t *testing.T) {
 
 func TestFileReplacingADirectoryIsKept(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"file", "symlink"} {
-		t.Run(kind, func(t *testing.T) {
-			u := newUpstream(t)
-			c1, t1 := u.commit("main", map[string]string{"a/f": "1", "keep": "k"})
-			f, _ := newFetcher(t, map[string]upstream{"r": u}, nil)
-			if _, err := fetch(t, f, "r", c1, t1); err != nil {
-				t.Fatal(err)
-			}
-			f.Wait()
-			u.git("rm", "-rq", "a")
-			if kind == "symlink" {
-				if err := os.Symlink("keep", filepath.Join(u.work, "a")); err != nil {
-					t.Fatal(err)
-				}
-			}
-			c2, t2 := u.commit("main", map[string]string{"b": "2"})
-			if kind == "file" {
-				u.git("rm", "-q", "b")
-				c2, t2 = u.commit("main", map[string]string{"a": "new"})
-			}
-			dir, err := fetch(t, f, "r", c2, t2)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Lstat(filepath.Join(dir, "a")); err != nil {
-				t.Errorf("a is missing from the moved checkout: %v", err)
-			}
-		})
+	u := newUpstream(t)
+	c1, t1 := u.commit("main", map[string]string{"a/f": "1", "s/f": "1", "keep": "k"})
+	f, _ := newFetcher(t, map[string]upstream{"r": u}, nil)
+	if _, err := fetch(t, f, "r", c1, t1); err != nil {
+		t.Fatal(err)
+	}
+	f.Wait()
+	u.git("rm", "-rq", "a", "s")
+	if err := os.Symlink("keep", filepath.Join(u.work, "s")); err != nil {
+		t.Fatal(err)
+	}
+	c2, t2 := u.commit("main", map[string]string{"a": "new"})
+	dir, err := fetch(t, f, "r", c2, t2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "s"} {
+		if st, err := os.Lstat(filepath.Join(dir, name)); err != nil || st.IsDir() {
+			t.Errorf("%s is %v, %v after a move that replaces the directory with a file or a link", name, st, err)
+		}
 	}
 }
 
@@ -464,7 +457,7 @@ func TestStalledSyncDoesNotBlockACachedCommit(t *testing.T) {
 	<-synced
 }
 
-func TestCloseStopsBackgroundWork(t *testing.T) {
+func TestCloseStopsAndRefusesWork(t *testing.T) {
 	t.Parallel()
 	u := newUpstream(t)
 	c, tree := u.commit("main", map[string]string{"a": "1"})
@@ -514,27 +507,12 @@ func TestCloseStopsBackgroundWork(t *testing.T) {
 	before := calls.Load()
 	f.Changed("r")
 	f.Wait()
-	if calls.Load() != before {
-		t.Error("a change after Close started a sync")
-	}
-}
-
-func TestClosedFetcherRefusesRequests(t *testing.T) {
-	t.Parallel()
-	u := newUpstream(t)
-	c, tree := u.commit("main", map[string]string{"a": "1"})
-	var calls atomic.Int32
-	f, _ := newFetcher(t, map[string]upstream{"r": u}, func(cfg *warm.Config) {
-		cfg.Remote = func(string) (string, error) { calls.Add(1); return "file://" + u.bare, nil }
-	})
-	if _, err := fetch(t, f, "r", c, tree); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	before := calls.Load()
-	_, err := fetch(t, f, "r", c, tree)
+	hang.Store(false)
 	f.Sync(t.Context(), "r")
-	if err == nil || !strings.Contains(err.Error(), "closed") || calls.Load() != before {
-		t.Errorf("Fetch after Close: error %v, remote calls %d, want a closed error and %d", err, calls.Load(), before)
+	if _, err := fetch(t, f, "r", c, tree); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Errorf("Fetch after Close: error %v, want a closed error", err)
+	}
+	if calls.Load() != before {
+		t.Errorf("after Close a change, a Sync or a Fetch called the remote %d times, want 0", calls.Load()-before)
 	}
 }
