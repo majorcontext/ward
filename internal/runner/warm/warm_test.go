@@ -518,3 +518,23 @@ func TestCloseStopsBackgroundWork(t *testing.T) {
 		t.Error("a change after Close started a sync")
 	}
 }
+
+func TestClosedFetcherRefusesRequests(t *testing.T) {
+	t.Parallel()
+	u := newUpstream(t)
+	c, tree := u.commit("main", map[string]string{"a": "1"})
+	var calls atomic.Int32
+	f, _ := newFetcher(t, map[string]upstream{"r": u}, func(cfg *warm.Config) {
+		cfg.Remote = func(string) (string, error) { calls.Add(1); return "file://" + u.bare, nil }
+	})
+	if _, err := fetch(t, f, "r", c, tree); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	before := calls.Load()
+	_, err := fetch(t, f, "r", c, tree)
+	f.Sync(t.Context(), "r")
+	if err == nil || !strings.Contains(err.Error(), "closed") || calls.Load() != before {
+		t.Errorf("Fetch after Close: error %v, remote calls %d, want a closed error and %d", err, calls.Load(), before)
+	}
+}

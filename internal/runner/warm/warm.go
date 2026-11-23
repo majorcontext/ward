@@ -170,8 +170,30 @@ func (f *Fetcher) Wait() { f.wg.Wait() }
 
 // Close cancels the background work, refuses new work and waits for the work that is under way. It is safe to call twice.
 func (f *Fetcher) Close() {
+	f.mu.Lock()
 	f.once.Do(func() { close(f.stop) })
+	f.mu.Unlock()
 	f.wg.Wait()
+}
+
+// admit registers one operation with the lifetime of the fetcher. It returns a context that ends when ctx ends or Close
+// runs, and a function that ends the operation. It reports false after Close.
+func (f *Fetcher) admit(ctx context.Context) (context.Context, func(), bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed() {
+		return ctx, nil, false
+	}
+	f.wg.Add(1)
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-f.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() { cancel(); f.wg.Done() }, true
 }
 
 func (f *Fetcher) closed() bool {
@@ -181,19 +203,6 @@ func (f *Fetcher) closed() bool {
 	default:
 		return false
 	}
-}
-
-// work returns the context of one piece of background work. Close cancels it.
-func (f *Fetcher) work() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-f.stop:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	return ctx, cancel
 }
 
 // Repos returns the repositories that have a clone.
@@ -289,6 +298,11 @@ func (f *Fetcher) Fetch(ctx context.Context, req runnerproto.Request, dir string
 	if !objectID.MatchString(req.Commit) {
 		return &refusal{"commit is not an object id"}
 	}
+	ctx, done, ok := f.admit(ctx)
+	if !ok {
+		return errors.New("the fetcher is closed")
+	}
+	defer done()
 	r := f.acquire(req.Repo)
 	defer f.release(r)
 	err := f.serve(ctx, r, req, dir)
@@ -435,16 +449,12 @@ func (f *Fetcher) fetchCommit(ctx context.Context, r *repo, req runnerproto.Requ
 
 // later runs fn in the background with a context that Close cancels, tracked by Wait. It reports false after Close.
 func (f *Fetcher) later(fn func(ctx context.Context)) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.closed() {
+	ctx, done, ok := f.admit(context.Background())
+	if !ok {
 		return false
 	}
-	f.wg.Add(1)
 	go func() {
-		defer f.wg.Done()
-		ctx, cancel := f.work()
-		defer cancel()
+		defer done()
 		fn(ctx)
 	}()
 	return true

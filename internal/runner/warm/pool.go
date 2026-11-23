@@ -186,6 +186,11 @@ func (f *Fetcher) Changed(repo string) {
 // Sync fetches the branches of repo into its clone and then moves the ready checkouts. It does nothing for a repository
 // without a clone. A sync that runs when another is under way makes the other run once more.
 func (f *Fetcher) Sync(ctx context.Context, name string) {
+	ctx, done, ok := f.admit(ctx)
+	if !ok {
+		return
+	}
+	defer done()
 	f.mu.Lock()
 	r, ok := f.repos[name]
 	if !ok {
