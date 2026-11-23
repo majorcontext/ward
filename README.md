@@ -23,7 +23,7 @@ A runner receives its work in one of two ways. In push mode ward posts each requ
 
 A runner can live on any bare-metal Linux host of any provider, or on your own hardware. ward holds no provider code. The host needs a container engine, `runsc` with `/dev/kvm`, a cache directory on local disk and outbound HTTPS. `ward runner install` checks the host, writes the systemd unit and the environment file, and prints what is missing.
 
-No specific vendor is required for either. A runner of another author can test itself with `runnerproto/runnertest`. See `docs/standalone-runner.md` to run `ward runner` on Kubernetes (the chart value `runner.enabled`) or on a Linux machine. The wire and the variables are in `docs/architecture.md`, Runner protocol and Standalone runner.
+No specific vendor is required for either. A runner by another author can test itself with `runnerproto/runnertest`. See `docs/standalone-runner.md` to run `ward runner` on Kubernetes (the chart value `runner.enabled`) or on a Linux machine. The wire and the variables are in `docs/architecture.md`, Runner protocol and Standalone runner.
 
 ## Developing ward
 
