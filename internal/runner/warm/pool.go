@@ -2,6 +2,7 @@ package warm
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -65,7 +66,7 @@ func (f *Fetcher) update(ctx context.Context, r *repo, dir, index, from, to stri
 	}
 	var scan linkScan
 	dctx, cancel := context.WithTimeout(ctx, gitTimeout)
-	err := f.git.runTo(dctx, gitOpts{gitDir: r.path}, &scan, "diff-tree", "-r", "--raw", "-z", "--no-renames", from, to)
+	err := f.git.runTo(dctx, gitOpts{gitDir: r.path}, &scan, "diff-tree", "-r", "-t", "--raw", "--no-abbrev", "-z", "--no-renames", from, to)
 	cancel()
 	if err != nil {
 		return err
@@ -73,8 +74,10 @@ func (f *Fetcher) update(ctx context.Context, r *repo, dir, index, from, to stri
 	if scan.found {
 		return &refusal{"tree holds a submodule entry, which a runner does not check out"}
 	}
-	_, err = f.gitRun(ctx, gitTimeout, gitOpts{gitDir: r.path, workTree: dir, index: index, open: true}, "read-tree", "-m", "-u", from, to)
-	return err
+	if _, err = f.gitRun(ctx, gitTimeout, gitOpts{gitDir: r.path, workTree: dir, index: index, open: true}, "read-tree", "-m", "-u", from, to); err != nil {
+		return err
+	}
+	return fixDirs(dir, &scan)
 }
 
 // refill builds ready checkouts at base, in the background, until the pool is full.
@@ -237,12 +240,15 @@ func dirSize(path string) int64 {
 	return n
 }
 
-// linkScan reads the NUL-separated output of diff-tree --raw -z, which alternates a header and a path, and finds a
-// header whose new mode is 160000. It holds one record at a time.
+// linkScan reads the NUL-separated output of diff-tree --raw -z -t, which alternates a header and a path. It finds a
+// header whose new mode is 160000, and it lists the directories that the tree gains or loses with no file under them,
+// which read-tree never writes or removes. It holds one record at a time.
 type linkScan struct {
-	part  []byte
-	path  bool
-	found bool
+	part       []byte
+	hdr        []string
+	path       bool
+	found      bool
+	empty, del []string
 }
 
 func (l *linkScan) Write(p []byte) (int, error) {
@@ -254,11 +260,53 @@ func (l *linkScan) Write(p []byte) (int, error) {
 			continue
 		}
 		if !l.path {
-			if fl := strings.Fields(string(l.part)); len(fl) > 1 && fl[1] == "160000" {
-				l.found = true
-			}
+			l.hdr = strings.Fields(string(l.part))
+		} else {
+			l.record(string(l.part))
 		}
 		l.path, l.part = !l.path, l.part[:0]
 	}
 	return len(p), nil
+}
+
+func (l *linkScan) record(path string) {
+	if len(l.hdr) < 4 {
+		return
+	}
+	switch {
+	case l.hdr[1] == "160000":
+		l.found = true
+	case l.hdr[1] == "040000" && l.hdr[3] == emptyTree:
+		l.empty = append(l.empty, path)
+	case l.hdr[0] == ":040000" && l.hdr[1] == "000000":
+		l.del = append(l.del, path)
+	}
+}
+
+// fixDirs removes the directories that the tree lost, deepest first, and makes the empty directories that it gained.
+func fixDirs(dir string, scan *linkScan) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	for i := len(scan.del) - 1; i >= 0; i-- {
+		_ = root.Remove(scan.del[i])
+	}
+	for _, p := range scan.empty {
+		if !filepath.IsLocal(p) {
+			return &refusal{"tree holds an unsafe path"}
+		}
+		at := ""
+		for _, part := range strings.Split(p, "/") {
+			at = filepath.Join(at, part)
+			if err := root.Mkdir(at, 0o777); err != nil && !errors.Is(err, fs.ErrExist) {
+				return err
+			}
+			if err := root.Chmod(at, 0o777); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

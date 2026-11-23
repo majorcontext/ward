@@ -281,3 +281,56 @@ func TestFailureFallsBack(t *testing.T) {
 		t.Errorf("error %v, fallback commit %q, want %q", err, got, c)
 	}
 }
+
+// emptyDirs commits a tree with the empty directories "empty" and "a/b", and a tree without them.
+func (u upstream) emptyDirs() (withC, withT, withoutC, withoutT string) {
+	u.t.Helper()
+	const empty = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	mk := func(input string) string {
+		cmd := exec.Command("git", "mktree")
+		cmd.Dir, cmd.Stdin = u.work, strings.NewReader(input)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			u.t.Fatalf("mktree: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	blob := func() string {
+		cmd := exec.Command("git", "hash-object", "-w", "--stdin")
+		cmd.Dir, cmd.Stdin = u.work, strings.NewReader("x")
+		out, _ := cmd.Output()
+		return strings.TrimSpace(string(out))
+	}()
+	a := mk("040000 tree " + empty + "\tb\n")
+	with := mk("040000 tree " + a + "\ta\n040000 tree " + empty + "\tempty\n100644 blob " + blob + "\tf\n")
+	without := mk("100644 blob " + blob + "\tf\n")
+	commit := func(tree string) string {
+		c := u.git("commit-tree", tree, "-m", "c")
+		u.git("push", "-q", "origin", c+":refs/heads/main", "--force")
+		return c
+	}
+	return commit(with), with, commit(without), without
+}
+
+func TestEmptyDirectoriesFollowTheTree(t *testing.T) {
+	t.Parallel()
+	u := newUpstream(t)
+	withC, withT, withoutC, withoutT := u.emptyDirs()
+	f, _ := newFetcher(t, map[string]upstream{"r": u}, nil)
+	for _, tc := range []struct {
+		name, commit, tree string
+		want               bool
+	}{{"direct build", withC, withT, true}, {"moved from a ready checkout that has them", withoutC, withoutT, false}, {"moved to a tree that has them", withC, withT, true}} {
+		dir, err := fetch(t, f, "r", tc.commit, tc.tree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Wait()
+		for _, p := range []string{"empty", "a/b"} {
+			_, err := os.Stat(filepath.Join(dir, p))
+			if (err == nil) != tc.want {
+				t.Errorf("%s: %s exists %v, want %v", tc.name, p, err == nil, tc.want)
+			}
+		}
+	}
+}
