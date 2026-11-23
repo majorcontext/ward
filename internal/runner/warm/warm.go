@@ -327,7 +327,7 @@ func (f *Fetcher) remote(ctx context.Context, r *repo, name string) (url string,
 	if url, err = f.cfg.Remote(name); err != nil {
 		return "", o, netError{err}
 	}
-	o.gitDir = r.path
+	o.gitDir, o.url = r.path, url
 	if f.cfg.Header != nil {
 		if o.header, err = f.cfg.Header(ctx); err != nil {
 			return "", o, netError{err}

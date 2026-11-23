@@ -1,7 +1,10 @@
 package warm_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -360,5 +363,29 @@ func TestNewRefusesAnOldGit(t *testing.T) {
 	_, err := warm.New(t.Context(), warm.Config{Dir: root + "/c", PoolDir: root + "/p", Remote: func(string) (string, error) { return "", nil }})
 	if err == nil || !strings.Contains(err.Error(), "2.31") {
 		t.Errorf("error %v, want one that names git 2.31", err)
+	}
+}
+
+func TestGitErrorsHoldNoRemoteURL(t *testing.T) {
+	t.Parallel()
+	const secret = "user:pw@127.0.0.1:9/secret-repo.git"
+	var logs bytes.Buffer
+	var fellBack error
+	f, _ := newFetcher(t, nil, func(c *warm.Config) {
+		c.Remote = func(string) (string, error) { return "http://" + secret, nil }
+		c.Log = slog.New(slog.NewTextHandler(&logs, nil))
+		c.Fallback = func(context.Context, runnerproto.Request, string) error { return nil }
+	})
+	_, err := fetch(t, f, "r", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	fellBack = err
+	for _, text := range []string{logs.String(), fmt.Sprint(fellBack)} {
+		for _, leak := range []string{"user:pw", "127.0.0.1", "secret-repo", "http://"} {
+			if strings.Contains(text, leak) {
+				t.Errorf("%q leaked %q", text, leak)
+			}
+		}
+	}
+	if !strings.Contains(logs.String(), "using the fallback") {
+		t.Errorf("the failure was not logged: %q", logs.String())
 	}
 }

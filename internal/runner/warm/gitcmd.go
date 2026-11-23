@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -42,7 +43,9 @@ type gitCmd struct{ home string }
 // git through the environment, never through the argument list.
 type gitOpts struct {
 	gitDir, workTree, index, header string
-	open                            bool
+	// url is the remote that the run talks to. Its text never reaches an error.
+	url  string
+	open bool
 }
 
 type gitError struct {
@@ -77,6 +80,25 @@ func (g gitCmd) env(o gitOpts) []string {
 		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, kv[1]))
 	}
 	return env
+}
+
+var urlText = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s'"]+`)
+
+// redact removes the remote URL, its user information and its host from text, and any other URL.
+func redact(text, remote string) string {
+	if u, err := url.Parse(remote); err == nil && remote != "" {
+		olds := []string{remote, u.Host, u.Hostname()}
+		if u.User != nil {
+			pw, _ := u.User.Password()
+			olds = append(olds, u.User.String(), u.User.Username(), pw)
+		}
+		for _, old := range olds {
+			if old != "" {
+				text = strings.ReplaceAll(text, old, "<remote>")
+			}
+		}
+	}
+	return urlText.ReplaceAllString(text, "<url>")
 }
 
 const maxOutput = 1 << 20
@@ -131,7 +153,7 @@ func (g gitCmd) runTo(ctx context.Context, o gitOpts, stdout io.Writer, args ...
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	ge := &gitError{args: shown, stderr: string(errb.b), code: -1, err: err}
+	ge := &gitError{args: redact(shown, o.url), stderr: redact(string(errb.b), o.url), code: -1, err: err}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		ge.code = exit.ExitCode()
