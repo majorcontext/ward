@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/majorcontext/ward/internal/runner/warm"
@@ -95,7 +96,7 @@ func read(t *testing.T, path string) string {
 func TestFetchWritesTheExactTree(t *testing.T) {
 	t.Parallel()
 	u := newUpstream(t)
-	u.commit("main", map[string]string{".gitattributes": "*.txt text eol=crlf\n", "a.txt": "x\ny\n", "pkg/run.sh": "#!/bin/sh\n"})
+	u.commit("main", map[string]string{".gitattributes": "*.txt text eol=crlf\n", "a.txt": "x\ny\n", "pkg/run.sh": "#!/bin/sh\n", ":a 160000": "n"})
 	if err := os.Symlink("a.txt", filepath.Join(u.work, "link")); err != nil {
 		t.Fatal(err)
 	}
@@ -249,17 +250,22 @@ func TestCacheStaysBounded(t *testing.T) {
 		c, tree := ups[n].commit("main", map[string]string{"f": n})
 		ids[n] = [2]string{c, tree}
 	}
-	f, root := newFetcher(t, ups, func(c *warm.Config) { c.MaxRepos, c.PoolSize = 2, 1 })
+	f, root := newFetcher(t, ups, func(c *warm.Config) { c.MaxRepos, c.PoolSize = 1, 1 })
+	var wg sync.WaitGroup
 	for _, n := range []string{"a", "b", "c"} {
-		if _, err := fetch(t, f, n, ids[n][0], ids[n][1]); err != nil {
-			t.Fatal(err)
-		}
-		f.Wait()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := fetch(t, f, n, ids[n][0], ids[n][1]); err != nil {
+				t.Error(err)
+			}
+		}()
 	}
+	wg.Wait()
+	f.Wait()
 	clones, _ := filepath.Glob(filepath.Join(root, "clones", "*.git"))
-	slots, _ := filepath.Glob(filepath.Join(root, "pool", "slot-*"))
-	if len(clones) != 2 || len(f.Repos()) != 2 || len(slots) > 2 {
-		t.Errorf("clones %d, repos %v, ready checkouts %d; want 2, 2 repos and at most 2", len(clones), f.Repos(), len(slots))
+	if len(clones) > 1 || len(f.Repos()) > 1 {
+		t.Errorf("clones %d, repos %v; want at most 1 of each", len(clones), f.Repos())
 	}
 }
 

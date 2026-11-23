@@ -1,7 +1,6 @@
 package warm
 
 import (
-	"bytes"
 	"context"
 	"io/fs"
 	"os"
@@ -64,14 +63,15 @@ func (f *Fetcher) update(ctx context.Context, r *repo, dir, index, from, to stri
 	if from == to {
 		return nil
 	}
-	raw, err := f.gitRun(ctx, gitTimeout, gitOpts{gitDir: r.path}, "diff-tree", "-r", "--raw", "-z", "--no-renames", from, to)
+	var scan linkScan
+	dctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	err := f.git.runTo(dctx, gitOpts{gitDir: r.path}, &scan, "diff-tree", "-r", "--raw", "-z", "--no-renames", from, to)
+	cancel()
 	if err != nil {
 		return err
 	}
-	for _, rec := range bytes.Split(raw, []byte{0}) {
-		if fl := strings.Fields(string(rec)); len(fl) > 1 && fl[0][0] == ':' && fl[1] == "160000" {
-			return &refusal{"tree holds a submodule entry, which a runner does not check out"}
-		}
+	if scan.found {
+		return &refusal{"tree holds a submodule entry, which a runner does not check out"}
 	}
 	_, err = f.gitRun(ctx, gitTimeout, gitOpts{gitDir: r.path, workTree: dir, index: index, open: true}, "read-tree", "-m", "-u", from, to)
 	return err
@@ -235,4 +235,30 @@ func dirSize(path string) int64 {
 		return nil
 	})
 	return n
+}
+
+// linkScan reads the NUL-separated output of diff-tree --raw -z, which alternates a header and a path, and finds a
+// header whose new mode is 160000. It holds one record at a time.
+type linkScan struct {
+	part  []byte
+	path  bool
+	found bool
+}
+
+func (l *linkScan) Write(p []byte) (int, error) {
+	for _, c := range p {
+		if c != 0 {
+			if len(l.part) < 1<<16 {
+				l.part = append(l.part, c)
+			}
+			continue
+		}
+		if !l.path {
+			if fl := strings.Fields(string(l.part)); len(fl) > 1 && fl[1] == "160000" {
+				l.found = true
+			}
+		}
+		l.path, l.part = !l.path, l.part[:0]
+	}
+	return len(p), nil
 }

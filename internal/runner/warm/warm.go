@@ -193,8 +193,10 @@ func (f *Fetcher) acquire(name string) *repo {
 
 func (f *Fetcher) release(r *repo) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	r.busy--
-	f.mu.Unlock()
+	for len(f.repos) > f.cfg.MaxRepos && f.evictLocked() {
+	}
 }
 
 // evictLocked removes the idle repository that was used least recently. It reports whether it removed one.

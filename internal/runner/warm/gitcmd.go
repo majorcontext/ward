@@ -1,13 +1,15 @@
 package warm
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/majorcontext/ward/internal/procgroup"
 )
 
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -55,30 +57,62 @@ func (g gitCmd) env(o gitOpts) []string {
 	return env
 }
 
-// run returns the standard output. With o.open, git runs under umask 0, so that the check user can write the files.
+const maxOutput = 1 << 20
+
+// tail keeps the last n bytes written to it.
+type tail struct {
+	b []byte
+	n int
+}
+
+func (t *tail) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > t.n {
+		t.b = t.b[len(t.b)-t.n:]
+	}
+	return len(p), nil
+}
+
+// capped keeps at most maxOutput bytes and fails the run past that.
+type capped struct{ b []byte }
+
+func (c *capped) Write(p []byte) (int, error) {
+	if len(c.b)+len(p) > maxOutput {
+		return 0, errors.New("output is too large")
+	}
+	c.b = append(c.b, p...)
+	return len(p), nil
+}
+
+// run returns the standard output, at most 1 MiB of it.
 func (g gitCmd) run(ctx context.Context, o gitOpts, args ...string) ([]byte, error) {
+	var out capped
+	err := g.runTo(ctx, o, &out, args...)
+	return out.b, err
+}
+
+// runTo writes the standard output to stdout. With o.open, git runs under umask 0, so that the check user can write
+// the files. The run is a process group, so that a helper of git ends with it.
+func (g gitCmd) runTo(ctx context.Context, o gitOpts, stdout io.Writer, args ...string) error {
 	name, shown := "git", strings.Join(args, " ")
 	if o.open {
 		name, args = "sh", append([]string{"-c", `umask 0; exec git "$@"`, "sh"}, args...)
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.Command(name, args...)
 	cmd.Env = g.env(o)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	errb := &tail{n: 512}
+	cmd.Stdout, cmd.Stderr = stdout, errb
+	err := procgroup.Run(ctx, cmd, nil)
 	if err == nil {
-		return out.Bytes(), nil
+		return nil
 	}
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
-	ge := &gitError{args: shown, stderr: errb.String(), code: -1, err: err}
+	ge := &gitError{args: shown, stderr: string(errb.b), code: -1, err: err}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		ge.code = exit.ExitCode()
 	}
-	if len(ge.stderr) > 512 {
-		ge.stderr = ge.stderr[len(ge.stderr)-512:]
-	}
-	return nil, ge
+	return ge
 }
