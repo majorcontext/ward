@@ -74,10 +74,13 @@ func (f *Fetcher) update(ctx context.Context, r *repo, dir, index, from, to stri
 	if scan.found {
 		return &refusal{"tree holds a submodule entry, which a runner does not check out"}
 	}
+	if err := removeDirs(dir, &scan); err != nil {
+		return err
+	}
 	if _, err = f.gitRun(ctx, gitTimeout, gitOpts{gitDir: r.path, workTree: dir, index: index, open: true}, "read-tree", "-m", "-u", from, to); err != nil {
 		return err
 	}
-	return fixDirs(dir, &scan)
+	return makeDirs(dir, &scan)
 }
 
 // refill builds ready checkouts at base, in the background, until the pool is full.
@@ -283,8 +286,10 @@ func (l *linkScan) record(path string) {
 	}
 }
 
-// fixDirs removes the directories that the tree lost, deepest first, and makes the empty directories that it gained.
-func fixDirs(dir string, scan *linkScan) error {
+// removeDirs removes the directories that the tree loses and that hold no file, deepest first. It runs before read-tree,
+// so it can never remove a file or a link that read-tree writes in place of a directory: Remove fails on a directory
+// that still holds files, and read-tree removes those itself.
+func removeDirs(dir string, scan *linkScan) error {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
@@ -293,6 +298,16 @@ func fixDirs(dir string, scan *linkScan) error {
 	for i := len(scan.del) - 1; i >= 0; i-- {
 		_ = root.Remove(scan.del[i])
 	}
+	return nil
+}
+
+// makeDirs makes the empty directories that the tree gains, with mode 0777 like the route path.
+func makeDirs(dir string, scan *linkScan) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
 	for _, p := range scan.empty {
 		if !filepath.IsLocal(p) {
 			return &refusal{"tree holds an unsafe path"}

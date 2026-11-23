@@ -389,3 +389,36 @@ func TestGitErrorsHoldNoRemoteURL(t *testing.T) {
 		t.Errorf("the failure was not logged: %q", logs.String())
 	}
 }
+
+func TestFileReplacingADirectoryIsKept(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			u := newUpstream(t)
+			c1, t1 := u.commit("main", map[string]string{"a/f": "1", "keep": "k"})
+			f, _ := newFetcher(t, map[string]upstream{"r": u}, nil)
+			if _, err := fetch(t, f, "r", c1, t1); err != nil {
+				t.Fatal(err)
+			}
+			f.Wait()
+			u.git("rm", "-rq", "a")
+			if kind == "symlink" {
+				if err := os.Symlink("keep", filepath.Join(u.work, "a")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c2, t2 := u.commit("main", map[string]string{"b": "2"})
+			if kind == "file" {
+				u.git("rm", "-q", "b")
+				c2, t2 = u.commit("main", map[string]string{"a": "new"})
+			}
+			dir, err := fetch(t, f, "r", c2, t2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "a")); err != nil {
+				t.Errorf("a is missing from the moved checkout: %v", err)
+			}
+		})
+	}
+}
