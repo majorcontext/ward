@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
 
 	"github.com/majorcontext/ward/internal/check"
 )
+
+// errCheckEnd marks the span of a check wait that ended in a failed check or a store error.
+var errCheckEnd = errors.New("land: the checks did not pass")
 
 // maxRetries is the number of times that a land goes back to the first step.
 const maxRetries = 8
@@ -40,9 +45,9 @@ func candidateRef(id string) string { return "refs/ward/candidates/" + id }
 
 // run takes one land to its end. A cancelled context leaves the land as it is, and a restart resumes it.
 // It reports whether a check failed the land. It returns an error only when the end of the land could not be recorded.
-func (s *Service) run(l Land) (bool, error) {
+func (s *Service) run(ctx context.Context, l Land) (bool, error) {
 	for {
-		out := s.attempt(&l)
+		out := s.attempt(ctx, &l)
 		if out.kind == retry {
 			if l.Retries >= maxRetries {
 				out = outcome{kind: failed, err: &Error{Code: out.retryCode, Message: "the ref kept moving or motte kept timing out"}}
@@ -62,25 +67,29 @@ func (s *Service) run(l Land) (bool, error) {
 }
 
 // attempt runs steps 1 to 5.
-func (s *Service) attempt(l *Land) outcome {
-	ctx := s.ctx
+func (s *Service) attempt(ctx context.Context, l *Land) outcome {
 	reader, merger := s.client("read", l.Repo), s.client("merge", l.Repo)
 	if l.State == Landing && l.Call != nil {
 		return s.send(ctx, merger, l)
 	}
-	branch, err := reader.Ref(ctx, l.Branch)
+	pctx, end := span(ctx, "ward.land.prepare")
+	branch, err := reader.Ref(pctx, l.Branch)
 	if err != nil {
+		end(err)
 		return s.refusal(err)
 	}
-	tip, err := reader.Ref(ctx, l.Ref)
+	tip, err := reader.Ref(pctx, l.Ref)
 	if err != nil {
+		end(err)
 		return s.refusal(err)
 	}
-	base, err := mergeBase(ctx, reader, tip.Commit, branch.Commit)
+	base, err := mergeBase(pctx, reader, tip.Commit, branch.Commit)
 	if err != nil {
+		end(err)
 		return s.refusal(err)
 	}
-	candidate, tree, err := s.candidate(ctx, reader, merger, l, tip.Commit, base, branch.Commit)
+	candidate, tree, err := s.candidate(pctx, reader, merger, l, tip.Commit, base, branch.Commit)
+	end(err, attribute.Bool("fast_forward", base == tip.Commit))
 	if err != nil {
 		return s.refusal(err)
 	}
@@ -183,8 +192,18 @@ func (s *Service) check(ctx context.Context, reader *client.Client, l *Land, tip
 
 // await waits until every check has a verdict for tree and returns the first fail. It sends a request for each pending
 // check, and it calls report with the verdicts after each read.
-func (s *Service) await(ctx context.Context, repo, tree, candidate string, mark int64, checks []check.Check, report func([]check.Verdict) error) outcome {
+func (s *Service) await(ctx context.Context, repo, tree, candidate string, mark int64, checks []check.Check, report func([]check.Verdict) error) (out outcome) {
+	polls := 0
+	ctx, end := span(ctx, "ward.land.checks", attribute.Int("checks", len(checks)))
+	defer func() {
+		var err error
+		if out.kind == failed || out.storeErr != nil {
+			err = errCheckEnd
+		}
+		end(err, attribute.Int("polls", polls), attribute.Bool("failed", out.kind == failed), attribute.Bool("aborted", out.kind == aborted))
+	}()
 	for {
+		polls++
 		changed := s.checks.Changed()
 		verdicts := make([]check.Verdict, len(checks))
 		pending := false
@@ -235,7 +254,9 @@ func (s *Service) land(ctx context.Context, merger *client.Client, l *Land, base
 // and it answers a repeat of the same id with the first result.
 func (s *Service) send(ctx context.Context, merger *client.Client, l *Land) outcome {
 	c := l.Call
+	ctx, end := span(ctx, "ward.land.send", attribute.Int("attempt", l.Attempt))
 	res, err := merger.Land(ctx, l.Repo, api.LandRequest{ID: fmt.Sprintf("%s-%d", l.ID, l.Attempt), Ref: l.Ref, Base: c.Base, Head: c.Head, ExpectTree: c.Tree})
+	end(err)
 	if errors.Is(err, context.DeadlineExceeded) && s.ctx.Err() == nil {
 		return outcome{kind: retry, retryCode: CodeTimeout, keepCall: true}
 	}

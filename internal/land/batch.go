@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
 
@@ -42,8 +44,7 @@ func lands(ms []*member) []*Land {
 // runBatch judges the lands of ls with one check run on the tree that all their changes make, and lands them together.
 // A fail makes it find the first change that fails by a binary search over the prefixes of the batch. That change fails,
 // the prefix before it lands, and the changes after it stay queued.
-func (s *Service) runBatch(k Key, ls []Land) error {
-	ctx := s.ctx
+func (s *Service) runBatch(ctx context.Context, k Key, ls []Land) error {
 	reader, merger := s.client("read", k.Repo), s.client("merge", k.Repo)
 	name := scratchRef(ls[0].ID)
 	defer s.dropRef(reader, merger, name)
@@ -51,7 +52,9 @@ func (s *Service) runBatch(k Key, ls []Land) error {
 	if err != nil {
 		return s.settle(ptrs(ls), s.refusal(err))
 	}
-	ms, rest, out := s.build(ctx, reader, merger, ls, tip.Commit, name)
+	bctx, endBuild := span(ctx, "ward.land.build")
+	ms, rest, out := s.build(bctx, reader, merger, ls, tip.Commit, name)
+	endBuild(nil, attribute.Int("members", len(ms)))
 	if out.kind != proceed {
 		return s.settle(rest, out)
 	}
@@ -76,6 +79,8 @@ func (s *Service) runBatch(k Key, ls []Land) error {
 	}
 	judge := func(n int) (outcome, []check.Verdict) {
 		var last []check.Verdict
+		ctx, end := span(ctx, "ward.land.judge", attribute.Int("prefix", n))
+		defer func() { end(nil) }()
 		out := s.await(ctx, k.Repo, ms[n-1].tree, ms[n-1].commit, mark, checks, func(vs []check.Verdict) error {
 			last = vs
 			for _, m := range ms {
@@ -124,7 +129,10 @@ func (s *Service) runBatch(k Key, ls []Land) error {
 	for _, m := range ms {
 		setStates(m.l, verdicts)
 	}
-	if err := s.commit(ctx, merger, k, ms, tip.Commit); err != nil {
+	cctx, endCommit := span(ctx, "ward.land.commit", attribute.Int("members", len(ms)))
+	err = s.commit(cctx, merger, k, ms, tip.Commit)
+	endCommit(err)
+	if err != nil {
 		return err
 	}
 	if n == len(ms) {
@@ -248,7 +256,7 @@ func (s *Service) commit(ctx context.Context, merger *client.Client, k Key, ms [
 }
 
 // resumeBatch repeats the stored call of the lands that a restart found in the state landing.
-func (s *Service) resumeBatch(k Key, ls []Land) error {
+func (s *Service) resumeBatch(ctx context.Context, k Key, ls []Land) error {
 	var group []*Land
 	for i := range ls {
 		if ls[i].State == Landing && ls[i].Call != nil && ls[i].Call.ID == ls[0].Call.ID {
@@ -257,13 +265,15 @@ func (s *Service) resumeBatch(k Key, ls []Land) error {
 	}
 	reader, merger := s.client("read", k.Repo), s.client("merge", k.Repo)
 	defer s.dropRef(reader, merger, scratchRef(group[0].ID))
-	return s.sendBatch(s.ctx, merger, k, group)
+	return s.sendBatch(ctx, merger, k, group)
 }
 
 // sendBatch is the land call of motte for a batch. Motte answers a repeat of the same id with the first result.
 func (s *Service) sendBatch(ctx context.Context, merger *client.Client, k Key, group []*Land) error {
 	c := group[0].Call
+	ctx, end := span(ctx, "ward.land.send", attribute.Int("members", len(group)))
 	res, err := merger.Land(ctx, k.Repo, api.LandRequest{ID: c.ID, Ref: k.Ref, Base: c.Base, Head: c.Head, ExpectTree: c.Tree})
+	end(err)
 	switch {
 	case err == nil:
 		moved := map[string]string{}

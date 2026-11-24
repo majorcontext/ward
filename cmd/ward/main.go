@@ -164,7 +164,13 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 			return err
 		}
 	}
-	srv := &http.Server{Handler: server.New(deps), ReadHeaderTimeout: 10 * time.Second}
+	handler := server.New(deps)
+	shutdownMetrics, err := telemetry.SetupMetrics(ctx, cfg.OTLP, handler.Registry())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownMetrics(context.Background()) }()
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() {
 		if cfg.TLSCert != "" {

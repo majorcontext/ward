@@ -12,6 +12,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/majorcontext/motte/api"
 
@@ -27,6 +30,8 @@ import (
 )
 
 const maxHookBody = 64 << 10
+
+var tracer = otel.Tracer("github.com/majorcontext/ward/internal/server")
 
 // Deps are what the handler needs. Engine is nil when no mirror is configured.
 type Deps struct {
@@ -87,6 +92,9 @@ func New(d Deps) *Server {
 	return s
 }
 
+// Registry returns the metrics that /metrics serves.
+func (s *Server) Registry() *prometheus.Registry { return s.d.Registry }
+
 const hookRoute = "/v1/hooks/motte"
 
 // statusRecorder notes whether a handler sent a status.
@@ -120,6 +128,14 @@ func (p *probe) Write(b []byte) (int, error) { return len(b), nil }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec := &statusRecorder{ResponseWriter: w}
 	route := "unmatched"
+	ctx := (propagation.TraceContext{}).Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	ctx, span := tracer.Start(ctx, "ward.serve")
+	r = r.WithContext(ctx)
+	defer func() {
+		span.SetName("ward.serve " + route)
+		span.SetAttributes(attribute.String("route", route))
+		span.End()
+	}()
 	defer func() {
 		if p := recover(); p != nil {
 			s.d.Logger.Error("handler panic", "route", route, "panic", p, "stack", string(debug.Stack()))

@@ -15,6 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/majorcontext/motte/client"
 	"github.com/majorcontext/motte/grant"
 
@@ -33,6 +38,21 @@ const (
 	DefaultBatchMax = 8
 	startBatch      = 2
 )
+
+var tracer = otel.Tracer("github.com/majorcontext/ward/internal/land")
+
+// span starts a child span of ctx. The function that it returns ends the span with err and attrs.
+func span(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, func(err error, attrs ...attribute.KeyValue)) {
+	ctx, sp := tracer.Start(ctx, name, trace.WithAttributes(attrs...))
+	return ctx, func(err error, attrs ...attribute.KeyValue) {
+		sp.SetAttributes(attrs...)
+		if err != nil {
+			sp.AddEvent("exception", trace.WithAttributes(attribute.String("exception.type", fmt.Sprintf("%T", err))))
+			sp.SetStatus(codes.Error, "error")
+		}
+		sp.End()
+	}
+}
 
 // ErrNoMergeBase means that the first-parent chain of the branch never meets the first-parent chain of the target ref.
 var ErrNoMergeBase = errors.New("land: the branch has no merge base with the ref")
@@ -70,6 +90,22 @@ type Service struct {
 	sizes   map[Key]int
 	changed chan struct{}
 	wg      sync.WaitGroup
+	// queued holds the time that each land of this process was accepted, for the span of its run.
+	queued sync.Map
+}
+
+// waited returns the span attribute of the longest time that a land of ls has waited in this process, or none.
+func (s *Service) waited(ls ...Land) []attribute.KeyValue {
+	var longest time.Duration
+	for _, l := range ls {
+		if at, ok := s.queued.LoadAndDelete(l.ID); ok {
+			longest = max(longest, s.clock.Now().Sub(at.(time.Time)))
+		}
+	}
+	if longest == 0 {
+		return nil
+	}
+	return []attribute.KeyValue{attribute.Float64("queue_wait_ms", float64(longest)/1e6)}
 }
 
 // New returns a service. A nil clock means the wall clock.
@@ -108,7 +144,12 @@ func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
 		return Land{}, err
 	}
 	l := Land{ID: hex.EncodeToString(b[:]), Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
-	if err := s.store.InsertLand(ctx, l); err != nil {
+	ctx, end := span(ctx, "ward.land.enqueue", attribute.String("land_id", l.ID))
+	s.queued.Store(l.ID, s.clock.Now())
+	err := s.store.InsertLand(ctx, l)
+	end(err)
+	if err != nil {
+		s.queued.Delete(l.ID)
 		return Land{}, err
 	}
 	s.kick(Key{req.Repo, req.Ref})
@@ -256,15 +297,23 @@ func (s *Service) adapt(k Key, passed bool) {
 // step runs the oldest lands of k, as many as the batch size allows, to their end or back to the queue.
 func (s *Service) step(k Key, ls []Land) error {
 	if ls[0].Call != nil && ls[0].State == Landing && ls[0].Call.ID != "" {
-		return s.resumeBatch(k, ls)
+		ctx, end := span(s.ctx, "ward.land.batch", attribute.Int("size", len(ls)), attribute.Bool("resumed", true))
+		err := s.resumeBatch(ctx, k, ls)
+		end(err)
+		return err
 	}
 	if ls[0].Call != nil && ls[0].State == Landing {
 		ls = ls[:1]
 	}
 	if ls = ls[:min(len(ls), s.size(k))]; len(ls) > 1 {
-		return s.runBatch(k, ls)
+		ctx, end := span(s.ctx, "ward.land.batch", append(s.waited(ls...), attribute.Int("size", len(ls)))...)
+		err := s.runBatch(ctx, k, ls)
+		end(err)
+		return err
 	}
-	checkFailed, err := s.run(ls[0])
+	ctx, end := span(s.ctx, "ward.land.run", append(s.waited(ls[0]), attribute.String("land_id", ls[0].ID))...)
+	checkFailed, err := s.run(ctx, ls[0])
+	end(err, attribute.Bool("check_failed", checkFailed))
 	if err == nil && s.ctx.Err() == nil {
 		s.adapt(k, !checkFailed)
 	}

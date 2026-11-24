@@ -29,7 +29,7 @@ Non-goals:
 | `internal/runner` | `ward runner` (see Standalone runner): the hook, the tree fetch from motte and the post of the result. `internal/runner/sandbox` is the sandbox seam with the implementations `container`, `gvisor` and `fake`. `internal/runner/warm` is the warm checkouts, with the watcher seam `warm.Watcher` and its implementations `periodic` and `motteevents` (see Warm checkouts). | W6 |
 | `internal/dispatch` | The seam `dispatch.Dispatcher` and its implementations `push`, `pull` and `memdispatch` (see Dispatch). `internal/runner/install` is `ward runner install` (see Runner host). | W6 |
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/mirror/sqlite` is its state store. | W2, W3, W4 |
-| `internal/telemetry` | OTLP trace export. | W2 |
+| `internal/telemetry` | OTLP export of traces and metrics. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
 | `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
 | Change requests, review, merge queue, CI orchestration, import host | See Planned work. | Not built |
@@ -80,7 +80,7 @@ ward calls motte, and for CI jobs it calls the job API of a compute service. Not
 | `WARD_SEED_MAX_OBJECTS` | Most objects that one push of a seed may add (see Seed). Default 50000. |
 | `WARD_SEED_MAX_BYTES` | Most packed bytes that one push of a seed may add. Default 33554432 (32 MiB). |
 | `WARD_SEED_MAX_INFLATED_BYTES` | Most bytes of whole objects (the sum of the object sizes) that one push of a seed may add. Default 33554432 (32 MiB). |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional. Enables OTLP trace export. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional. Enables OTLP export of traces and metrics. The standard `OTEL_*` variables set the headers, the service name (default `ward`), the sampler and the metric interval (`OTEL_METRIC_EXPORT_INTERVAL`). |
 | `GIT_SSL_CAINFO` | Optional. ward passes it to git, so that git trusts a private certificate authority of a remote. |
 
 The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_KEYS` of motte) with the scopes `operator` and `read`. The land (see Land) and the seed (see Seed) also need the scope `merge`, so that key must hold `operator`, `read` and `merge`.
@@ -366,6 +366,8 @@ A ref is `synced` when it is not dirty, `pending` when it is dirty with no failu
 
 - Metrics, with names that start with `ward_`: `ward_mirror_pushes_total` (by mirror and result), `ward_mirror_dirty_refs` (by mirror), `ward_mirror_failing_refs` (by mirror and class), `ward_mirror_lag_seconds` (age of the oldest dirty ref, by mirror; the gauges of the state are read from the state store at each scrape), `ward_mirror_seeds_total` (by mirror and result: `seeded`, `refused` or `failed`), `ward_mirror_clone_bytes`, `ward_mirror_disk_over_budget`, `ward_hook_events_total` (by result) and `ward_http_requests_total` by route.
 - Traces: OTLP, with the endpoint from the environment and no vendor in the code. Span names start with `ward.mirror.` for the work (`ward.mirror.fetch`, `ward.mirror.push`, `ward.mirror.seed`, `ward.mirror.seed.push`).
+- Request and land spans: each request has the span `ward.serve <route>` and continues the `traceparent` that it carries. A land has `ward.land.enqueue` under its request. The worker records a root span for each pass: `ward.land.run` (`land_id`, `queue_wait_ms`, `check_failed`) for one land, with `ward.land.prepare` (the reads of motte, the merge base and the candidate), `ward.land.checks` (`checks`, `polls`, `failed`, `aborted`; the span has an error status when a check fails or the state store fails) and `ward.land.send` (the land call of motte, which swaps the ref); or `ward.land.batch` (`size`, `queue_wait_ms`, `resumed` for a batch that a restart repeats) for a batch, with `ward.land.build`, one `ward.land.judge` (`prefix`) for each check run, `ward.land.commit` and `ward.land.send`. Calls to motte carry the `traceparent` of the open span. A span holds no repository, ref, branch or credential, and a failed span records the Go type of the error, never its text.
+- OTLP metrics: with the endpoint set, the metrics of `/metrics` also go over OTLP, with the same names and values.
 - Logs: JSON. A log line never holds a grant, a token, the hook secret, a remote credential, a remote URL or an event body.
 - Instrumentation is additive. It never changes behavior or errors.
 
