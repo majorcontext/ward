@@ -1,8 +1,6 @@
 {
   "checks": [
-    {"name": "build-vet", "run": ["sh", "-c", "go build ./... && go vet ./..."], "timeout_seconds": 600},
-    {"name": "lint", "run": ["go", "run", "./internal/lint/cmd/lint", "./..."], "timeout_seconds": 600},
+    {"name": "static", "run": ["sh", "-c", "go build ./... && go vet ./... && go run ./internal/lint/cmd/lint ./... && test -z \"$(gofmt -l .)\""], "timeout_seconds": 900},
     {"name": "test", "run": ["sh", "-c", "GORACE=atexit_sleep_ms=0 go test -race -count=1 -p 1 ./..."], "timeout_seconds": 1500},
-    {"name": "gofmt", "run": ["sh", "-c", "test -z \"$(gofmt -l .)\""], "timeout_seconds": 120},
   ],
 }

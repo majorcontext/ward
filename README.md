@@ -27,7 +27,7 @@ No specific vendor is required for either. A runner by another author can test i
 
 ## Developing ward
 
-ward lands its own changes through ward. The file `.ward/checks.json` lists the required checks: `build-vet`, `lint`, `test` and `gofmt`. The GitHub jobs `chart` and `leak` stay outside it: `chart` needs `helm`, which a check environment does not guarantee, and `leak` needs the secret `LEAK_DENYLIST`, which a check must never receive.
+ward lands its own changes through ward. The file `.ward/checks.json` lists the required checks: `static` (build, vet, lint and gofmt) and `test`. The GitHub jobs `chart` and `leak` stay outside it: `chart` needs `helm`, which a check environment does not guarantee, and `leak` needs the secret `LEAK_DENYLIST`, which a check must never receive.
 
 The local loop:
 
