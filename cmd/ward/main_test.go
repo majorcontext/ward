@@ -8,11 +8,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
+	"syscall"
 	"testing"
 
 	metasqlite "github.com/majorcontext/motte/meta/sqlite"
 	"github.com/majorcontext/motte/testserver"
+
+	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
 )
 
 // askpassBin answers git like the ward binary does, but starts at once: compiling ward for a test costs more than the tests.
@@ -70,7 +74,30 @@ Username*) echo "$WARD_ASKPASS_USER" ;;
 esac
 `
 
+// stateTemplate is the migrated state database of ward that each harness copies.
+var stateTemplate []byte
+
+// memoryTemp points the temporary directories at memory when a gigabyte of it is free and a script can run there, so
+// no commit of a database or a clone waits for a disk. The tests write scripts to their temporary directories.
+func memoryTemp() {
+	var st syscall.Statfs_t
+	if syscall.Statfs("/dev/shm", &st) != nil || int64(st.Bavail)*int64(st.Bsize) < 1<<30 {
+		return
+	}
+	dir, err := os.MkdirTemp("/dev/shm", "ward-probe")
+	if err != nil {
+		return
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	script := filepath.Join(dir, "probe")
+	if os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755) == nil && exec.Command(script).Run() == nil {
+		_ = os.Setenv("TMPDIR", "/dev/shm")
+	}
+}
+
 func TestMain(m *testing.M) {
+	memoryTemp()
+	debug.SetGCPercent(400)
 	dir, err := os.MkdirTemp("", "ward-askpass")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -88,6 +115,15 @@ func TestMain(m *testing.M) {
 		}
 	}
 	if err := os.Mkdir(filepath.Join(bareTemplate, "hooks"), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	stateDB, err := mirrorsqlite.Open(context.Background(), filepath.Join(dir, "state.tmpl"))
+	if err != nil || stateDB.Close() != nil {
+		fmt.Fprintln(os.Stderr, "migrate the state template", err)
+		os.Exit(1)
+	}
+	if stateTemplate, err = os.ReadFile(filepath.Join(dir, "state.tmpl")); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -53,6 +53,7 @@ func (h *harness) landBody(branch string, extra map[string]any) []byte {
 }
 
 func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T) {
+	traceInMemory()
 	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
@@ -82,6 +83,7 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 
 	queued := h.postLand(p, "", "feature/x", map[string]any{"delete_branch": true})
 	got := h.awaitLand(p, queued.ID, "landed")
+	h.checkLandSpans(queued.ID)
 	main, err := h.readClient().Ref(t.Context(), "main")
 	if err != nil {
 		t.Fatal(err)

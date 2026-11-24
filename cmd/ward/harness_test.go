@@ -259,6 +259,9 @@ func buildHarness(t *testing.T, motte *testserver.Server, rem *remote) *harness 
 	h := &harness{t: t, motte: motte, remote: rem, dataDir: t.TempDir(), files: t.TempDir(),
 		secret: strings.Repeat("h", 32), notes: make(chan string, 4096), counts: map[string]int{}, landRecord: make(chan struct{}, 4)}
 	h.callerPK, h.callerSK, _ = ed25519.GenerateKey(rand.Reader)
+	if err := os.WriteFile(filepath.Join(h.dataDir, "state.db"), stateTemplate, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	path, err := h.motte.Client(h.motte.OperatorGrant(t)).CreateRepo(t.Context(), "widgets", "o1")
 	if err != nil {
 		t.Fatal(err)

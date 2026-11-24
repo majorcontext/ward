@@ -65,8 +65,9 @@ func newRunner(t *testing.T) *fakeRunner {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		code := int(r.status.Load())
 		r.reqs <- rr
-		w.WriteHeader(int(r.status.Load()))
+		w.WriteHeader(code)
 	}))
 	t.Cleanup(func() {
 		r.srv.Close()
