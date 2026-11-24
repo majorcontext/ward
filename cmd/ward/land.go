@@ -24,6 +24,12 @@ const (
 	maxLandAnswer = 1 << 20
 	// landReadLimit bounds one read of a land: the wait, and a margin for the answer.
 	landReadLimit = (landWaitSecs + 15) * time.Second
+	// landRetryWindow bounds how long a poll may fail in a row before the command gives up.
+	landRetryWindow = 2 * time.Minute
+	landRetryFirst  = 500 * time.Millisecond
+	landRetryMax    = 10 * time.Second
+	// landRetryLast is the time that the last read of the window gets.
+	landRetryLast = time.Second
 )
 
 type landAnswer struct {
@@ -130,9 +136,43 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 			return printLandError(stderr, cur.Error)
 		}
 		path := "/v1/lands/" + cur.ID + "?wait=" + strconv.Itoa(landWaitSecs) + "&state=" + cur.State
-		if cur, code = c.call(ctx, http.MethodGet, path, nil, stderr); code != 0 {
+		if cur, code = c.poll(ctx, cur.ID, path, stderr); code != 0 {
 			return code
 		}
+	}
+}
+
+// poll reads a land that the server has accepted. The land goes on without the client, so a transport error or a 5xx answer
+// is tried again with a growing pause until landRetryWindow passes without one good answer.
+func (c *landClient) poll(ctx context.Context, id, path string, stderr io.Writer) (landAnswer, int) {
+	var deadline time.Time
+	pause := landRetryFirst
+	for {
+		limit := landReadLimit
+		if !deadline.IsZero() {
+			limit = min(limit, time.Until(deadline))
+		}
+		out, fail := c.send(ctx, http.MethodGet, path, nil, limit)
+		if fail == nil {
+			return out, 0
+		}
+		if !fail.transient {
+			fmt.Fprintln(stderr, "ward land:", fail.msg)
+			return landAnswer{}, fail.exit
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(landRetryWindow)
+		}
+		if ctx.Err() != nil || time.Until(deadline) <= landRetryLast {
+			fmt.Fprintf(stderr, "ward land: lost contact with the server (%s); land %s may still finish: read GET /v1/lands/%s on WARD_URL to see its state\n", fail.msg, id, id)
+			return landAnswer{}, 1
+		}
+		fmt.Fprintf(stderr, "ward land: %s; reading land %s again\n", fail.msg, id)
+		select {
+		case <-time.After(min(pause, time.Until(deadline)-landRetryLast)):
+		case <-ctx.Done():
+		}
+		pause = min(pause*2, landRetryMax)
 	}
 }
 
@@ -142,14 +182,30 @@ var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request
 // landClient sends its token as a bearer token, and the access token in its own header.
 type landClient struct{ base, tok, accessName, accessValue string }
 
+// callFailure is a failed request. A transient one may succeed when repeated.
+type callFailure struct {
+	exit      int
+	msg       string
+	transient bool
+}
+
 // call sends one request and decodes the land of the answer. A non-zero code is the exit code of a failure that it has reported.
+// A POST goes through call and is never repeated: each POST makes a new land.
 func (c *landClient) call(ctx context.Context, method, path string, body []byte, stderr io.Writer) (landAnswer, int) {
-	ctx, cancel := context.WithTimeout(ctx, landReadLimit)
+	out, fail := c.send(ctx, method, path, body, landReadLimit)
+	if fail != nil {
+		fmt.Fprintln(stderr, "ward land:", fail.msg)
+		return landAnswer{}, fail.exit
+	}
+	return out, 0
+}
+
+func (c *landClient) send(ctx context.Context, method, path string, body []byte, limit time.Duration) (landAnswer, *callFailure) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
 	if err != nil {
-		fmt.Fprintln(stderr, "ward land: WARD_URL is not a URL")
-		return landAnswer{}, 2
+		return landAnswer{}, &callFailure{exit: 2, msg: "WARD_URL is not a URL"}
 	}
 	if c.tok != "" {
 		req.Header.Set("Authorization", "Bearer "+c.tok)
@@ -160,26 +216,29 @@ func (c *landClient) call(ctx context.Context, method, path string, body []byte,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := noRedirect.Do(req)
 	if err != nil {
-		fmt.Fprintln(stderr, "ward land: the request failed")
-		return landAnswer{}, 1
+		return landAnswer{}, &callFailure{exit: 1, msg: "the request failed", transient: true}
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxLandAnswer))
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxLandAnswer))
+	ok := resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted
+	if err != nil && (ok || resp.StatusCode >= 500) {
+		return landAnswer{}, &callFailure{exit: 1, msg: "the answer was cut off", transient: true}
+	}
+	if !ok && resp.StatusCode != http.StatusAccepted {
+		fail := &callFailure{exit: 1, transient: resp.StatusCode >= 500}
 		var env landEnvelope
-		if json.Unmarshal(raw, &env) != nil {
-			fmt.Fprintf(stderr, "ward land: status %d with no JSON body\n", resp.StatusCode)
-			return landAnswer{}, 1
+		if err != nil || json.Unmarshal(raw, &env) != nil {
+			fail.msg = fmt.Sprintf("status %d with no JSON body", resp.StatusCode)
+		} else {
+			fail.msg = fmt.Sprintf("status %d: %s: %s", resp.StatusCode, env.Error.Code, env.Error.Message)
 		}
-		fmt.Fprintf(stderr, "ward land: status %d: %s: %s\n", resp.StatusCode, env.Error.Code, env.Error.Message)
-		return landAnswer{}, 1
+		return landAnswer{}, fail
 	}
 	var out landAnswer
 	if json.Unmarshal(raw, &out) != nil || out.ID == "" {
-		fmt.Fprintf(stderr, "ward land: status %d with no land\n", resp.StatusCode)
-		return landAnswer{}, 1
+		return landAnswer{}, &callFailure{exit: 1, msg: fmt.Sprintf("status %d with no land", resp.StatusCode)}
 	}
-	return out, 0
+	return out, nil
 }
 
 func printLanded(stdout io.Writer, out landAnswer, branch, repo string) {
