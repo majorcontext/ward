@@ -31,7 +31,7 @@ ward lands its own changes through ward. The file `.ward/checks.json` lists the 
 
 The local loop:
 
-1. Clone the repository and make a branch.
+1. Clone the repository and create a branch.
 2. Run `ward check` at the root. It runs every check of `.ward/checks.json` in the working tree and prints a pass or fail summary with the time of each check. `ward check --only NAME` runs one. The run is local. It never contacts a ward server and posts no result, so a pass here does not count for a land.
 3. Push the branch.
 4. Run `ward land REPO BRANCH` (see `docs/architecture.md`, Land). The runner of the repository proves each check on the exact tree, and the land moves `main` only when every check passed.
