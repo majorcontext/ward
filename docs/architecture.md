@@ -28,6 +28,7 @@ Non-goals:
 | `runnerproto` | The public wire protocol of a check runner (see Runner protocol): request, lease, result, check token and the JSON schema. | W6 |
 | `internal/runner` | `ward runner` (see Standalone runner): the lease poll, the tree fetch from motte and the post of the result. `internal/runner/sandbox` is the sandbox seam with the implementations `container`, `gvisor` and `fake`. | W6 |
 | `internal/dispatch/pull` | The lease queue of the runners (see Dispatch). `internal/runner/install` is `ward runner install` (see Runner host). | W6 |
+| `internal/gitremote` | The seam `gitremote.Remote` (list the refs of a git remote and push refs to it), with the implementations `gitbin` (the git binary) and `fakeremote` (memory), and its suite `remotetest` (see Git access). | W2 |
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/mirror/sqlite` is its state store. | W2, W3, W4 |
 | `internal/telemetry` | OTLP export of traces and metrics. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
@@ -302,6 +303,8 @@ Read after write. A worker reads the ref from the metadata store of motte, so a 
 
 ### Git access
 
+The mirror lists the refs of a remote and pushes to it through the seam `gitremote.Remote` (`List` and `Push`). The implementation `gitbin` runs `git ls-remote` and `git push --porcelain` as this section says. `fakeremote` keeps the refs in memory. The suite `remotetest.Run` pushes with a lease on absence, a lease that holds, a lease that does not hold, no lease, a delete and a delete of a missing ref, and both implementations answer the same outcome for each. The seed pushes to motte through the same seam.
+
 The remote credential is a file or a GitHub App token (see GitHub App credential). ward reaches motte through git smart HTTP (see Git smart HTTP of motte) with a `read` grant. ward signs the grant with its own key: `repo` is the repository text, `scope` is `read`, and `exp` is 15 minutes after signing, so that one `git fetch` cannot outlive it. The verifier of motte checks only that `now < exp`, so it sets no cap on the life of a grant. The run of git has a 10 minute limit. The git routes of motte read the grant from `Authorization: Bearer` before they read the password of HTTP Basic, so ward sends the Bearer header on the first request and gets no 401 round trip. ward passes the header through the environment of the git process of motte only, never of the remote, (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` set `http.extraHeader`). It never puts the grant, the remote credential or a URL with user information in an argument list, a file of the clone or a log line. The remote credential reaches git through `GIT_ASKPASS`. The helper is the `ward` binary, which git runs with the prompt as its only argument. The environment variables `WARD_ASKPASS_FILE` and `WARD_ASKPASS_USER` tell it to answer the user name or the content of the credential file, so it reads the file at each push.
 
 The URL of the repository is `<WARD_MOTTE_URL>/git/<prefix>/<path>.git`, for the repository text `<prefix>:<path>`. The seed (see Seed) pushes to motte with a `merge` grant of the same life. For the calls to the control plane of motte (`/v1/events`, `/v1/subscriptions`) ward signs an `operator` grant with a life of 60 seconds. For `GET /v1/vcs/refs` it uses a `read` grant.
@@ -503,6 +506,7 @@ Every external provider sits behind an interface that its consumer owns. A provi
 | runner-sandbox | `internal/runner/sandbox.Sandbox` | `internal/runner/sandbox/sandboxtest.Run` | `internal/runner/sandbox/container`, `internal/runner/sandbox/gvisor`, `internal/runner/sandbox/fake` | |
 | runner-host | none — a contract of the machine | none — no code interface | none | Contract: a Linux host with a container engine, `runsc` and `/dev/kvm`, local disk, and outbound HTTPS to ward (see Runner host). |
 | mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
+| mirror-remote | `internal/gitremote.Remote` | `internal/gitremote/remotetest.Run` | `internal/gitremote/gitbin`, `internal/gitremote/fakeremote` | |
 | mirror-remote-credential | none — the GitHub App exchange is a concrete type in `internal/mirror` | none — no interface exists yet | none | No interface. Only the GitHub App credential and the password file exist. |
 
 - A cell that names Go code is `dir.Identifier`: the directory is relative to the module root.

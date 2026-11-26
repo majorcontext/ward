@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"errors"
+	"github.com/majorcontext/ward/internal/gitremote"
 
 	"go.opentelemetry.io/otel"
 
@@ -151,11 +152,11 @@ func (e *Engine) failAll(ctx context.Context, en Entry, targets []*target, pick 
 	return false
 }
 
-func specsOf(targets []*target) []pushSpec {
-	var specs []pushSpec
+func specsOf(targets []*target) []gitremote.PushSpec {
+	var specs []gitremote.PushSpec
 	for _, t := range targets {
 		if !t.failed {
-			specs = append(specs, pushSpec{Ref: t.git, Commit: t.commit, Lease: t.ref.Pushed, LeaseSet: t.ref.PushedSet})
+			specs = append(specs, gitremote.PushSpec{Ref: t.git, Commit: t.commit, Lease: t.ref.Pushed, LeaseSet: t.ref.PushedSet})
 		}
 	}
 	return specs
@@ -179,7 +180,7 @@ func (e *Engine) attempt(ctx context.Context, en Entry, due []Ref, final bool) (
 		return e.failAll(ctx, en, targets, func(*target) bool { return true }, credClass(err), true, final)
 	}
 	pctx, end := e.span(ctx, "ward.mirror.push")
-	results, err := e.git.push(pctx, clone, en.Remote, creds, specsOf(targets))
+	results, err := e.remote.Push(pctx, clone, en.Remote, creds, specsOf(targets))
 	end()
 	release()
 	if err != nil {
@@ -194,7 +195,7 @@ func (e *Engine) attempt(ctx context.Context, en Entry, due []Ref, final bool) (
 }
 
 // settle records the result of each target and returns the targets that the lease refused.
-func (e *Engine) settle(ctx context.Context, en Entry, targets []*target, results map[string]outcome) []*target {
+func (e *Engine) settle(ctx context.Context, en Entry, targets []*target, results map[string]gitremote.Outcome) []*target {
 	var stale []*target
 	for _, t := range targets {
 		if t.failed {
@@ -202,10 +203,10 @@ func (e *Engine) settle(ctx context.Context, en Entry, targets []*target, result
 		}
 		res, ok := results[t.git]
 		switch {
-		case ok && res == outcomeOK:
+		case ok && res == gitremote.OK:
 			t.failed = false
 			e.succeed(ctx, en, t)
-		case ok && res == outcomeStale:
+		case ok && res == gitremote.Stale:
 			e.m.pushes.WithLabelValues(en.Name, "stale").Inc()
 			stale = append(stale, t)
 		case ok:
@@ -227,7 +228,7 @@ func (e *Engine) reconcileStale(ctx context.Context, en Entry, clone string, sta
 		return
 	}
 	defer release()
-	tips, err := e.git.lsRemote(ctx, en.Remote, creds)
+	tips, err := e.remote.List(ctx, en.Remote, creds)
 	if err != nil {
 		e.failStale(ctx, en, stale, classifyRemote(err))
 		return
@@ -238,13 +239,13 @@ func (e *Engine) reconcileStale(ctx context.Context, en Entry, clone string, sta
 			e.log.Error("record remote value", "mirror", en.Name, "ref", t.ref.Name, "error", sanitize(err))
 		}
 	}
-	results, err := e.git.push(ctx, clone, en.Remote, creds, specsOf(stale))
+	results, err := e.remote.Push(ctx, clone, en.Remote, creds, specsOf(stale))
 	for _, t := range stale {
 		switch {
 		case err != nil:
 			t.failed = true
 			e.fail(ctx, en, t.ref, classifyRemote(err))
-		case results[t.git] == outcomeOK && hasResult(results, t.git):
+		case results[t.git] == gitremote.OK && hasResult(results, t.git):
 			e.succeed(ctx, en, t)
 		default:
 			t.failed = true
@@ -260,7 +261,7 @@ func (e *Engine) failStale(ctx context.Context, en Entry, stale []*target, class
 	}
 }
 
-func hasResult(results map[string]outcome, ref string) bool {
+func hasResult(results map[string]gitremote.Outcome, ref string) bool {
 	_, ok := results[ref]
 	return ok
 }

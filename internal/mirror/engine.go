@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/majorcontext/ward/internal/gitremote"
+	"github.com/majorcontext/ward/internal/gitremote/gitbin"
 	"log/slog"
 	"sync"
 	"time"
@@ -46,6 +48,8 @@ type Config struct {
 type Options struct {
 	Clock  Clock
 	Logger *slog.Logger
+	// Remote talks to the git remotes of the mirrors. Nil means the git binary.
+	Remote gitremote.Remote
 	// Done is called after a unit of work ends: kind is batch, reconcile, catchup, reset, init, seed or seed_refused, and mirror is empty
 	// for work that belongs to no mirror. It must not block.
 	Done func(kind, mirror string)
@@ -57,6 +61,7 @@ type Engine struct {
 	store   Store
 	motte   motteSigner
 	git     *gitRunner
+	remote  gitremote.Remote
 	clock   Clock
 	log     *slog.Logger
 	done    func(kind, mirror string)
@@ -100,10 +105,16 @@ func New(cfg Config, store Store, opts Options) *Engine {
 	if cfg.IdleTTL == 0 {
 		cfg.IdleTTL = DefaultIdleTTL
 	}
+	git := gitbin.Runner{Home: cfg.DataDir, Askpass: cfg.Askpass, Timeout: gitTimeout}
+	var rem gitremote.Remote = git
+	if opts.Remote != nil {
+		rem = opts.Remote
+	}
 	e := &Engine{
-		cfg: cfg, store: store, clock: opts.Clock, log: opts.Logger, done: opts.Done,
+		remote: rem,
+		cfg:    cfg, store: store, clock: opts.Clock, log: opts.Logger, done: opts.Done,
 		motte:   motteSigner{cfg: cfg.Motte, clock: opts.Clock},
-		git:     &gitRunner{home: cfg.DataDir, askpass: cfg.Askpass, timeout: gitTimeout},
+		git:     &gitRunner{git},
 		m:       newMetrics(store, opts.Clock),
 		entries: map[string]Entry{},
 		apps:    map[string]*appSource{},

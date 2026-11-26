@@ -5,11 +5,13 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/majorcontext/ward/internal/gitremote"
 )
 
 const (
-	askpassFileEnv = "WARD_ASKPASS_FILE"
-	askpassUserEnv = "WARD_ASKPASS_USER"
+	askpassFileEnv = gitremote.AskpassFileEnv
+	askpassUserEnv = gitremote.AskpassUserEnv
 )
 
 // MaybeAskpass runs the askpass helper when the environment asks for it. It returns false for a normal start.
