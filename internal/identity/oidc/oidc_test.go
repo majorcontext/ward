@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ const (
 var now = time.Unix(1_000_000, 0)
 
 func claims(email string, exp time.Time) map[string]any {
-	return map[string]any{"iss": issuer, "aud": []string{aud}, "email": email, "exp": exp.Unix(), "nbf": now.Add(-time.Minute).Unix()}
+	return map[string]any{"iss": issuer, "aud": []string{aud}, "email": email, "email_verified": true, "exp": exp.Unix(), "nbf": now.Add(-time.Minute).Unix()}
 }
 
 func newAuth(t *testing.T, iss *identitytest.Issuer) *oidc.Authenticator {
@@ -68,6 +69,8 @@ func TestRefusesClaimsOfAnotherApplicationOrPrincipal(t *testing.T) {
 		"issuer":          func(c map[string]any) { c["iss"] = "https://other.example.test" },
 		"not yet":         func(c map[string]any) { c["nbf"] = now.Add(time.Minute).Unix() },
 		"no email":        func(c map[string]any) { delete(c, "email") },
+		"unverified":      func(c map[string]any) { c["email_verified"] = false },
+		"no verification": func(c map[string]any) { delete(c, "email_verified") },
 		"not on the list": func(c map[string]any) { c["email"] = "dev@other.test" },
 	} {
 		c := claims("dev@dev.test", now.Add(time.Hour))
@@ -79,16 +82,29 @@ func TestRefusesClaimsOfAnotherApplicationOrPrincipal(t *testing.T) {
 	}
 }
 
-type failableKeys struct{ down bool }
+type failableKeys struct {
+	down          bool
+	canceled      atomic.Bool
+	hold, entered chan struct{}
+}
 
 func (f *failableKeys) RoundTrip(r *http.Request) (*http.Response, error) {
 	if f.down {
 		return nil, errors.New("key set unreachable")
 	}
+	if f.hold != nil {
+		f.entered <- struct{}{}
+		select {
+		case <-f.hold:
+		case <-r.Context().Done():
+			f.canceled.Store(true)
+			return nil, r.Context().Err()
+		}
+	}
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-func TestRefusesKeysAnHourPastTheirLastGoodFetch(t *testing.T) {
+func TestKeepsCachedKeysAfterAFailedRefreshUntilTheyAreStale(t *testing.T) {
 	t.Parallel()
 	iss := identitytest.NewIssuer(t, "k1")
 	keys := &failableKeys{}
@@ -108,8 +124,35 @@ func TestRefusesKeysAnHourPastTheirLastGoodFetch(t *testing.T) {
 	}
 	check(true, 0)
 	keys.down = true
-	check(true, 59*time.Minute)
-	check(false, 61*time.Minute)
+	check(true, 46*time.Minute)
+	check(true, 74*time.Minute)
+	check(false, 76*time.Minute)
+}
+
+func TestRefreshDoesNotBlockASignInWithAKnownKey(t *testing.T) {
+	t.Parallel()
+	iss := identitytest.NewIssuer(t, "k1")
+	keys := &failableKeys{}
+	at := now
+	a, err := oidc.New(oidc.Config{Issuer: issuer, Audience: aud, KeysURL: iss.URL, Client: &http.Client{Transport: keys, Timeout: time.Second}, Now: func() time.Time { return at },
+		Rules: []identity.Rule{{Principals: []string{"dev@dev.test"}, Repos: []string{identitytest.RepoA}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := request(iss.Sign(t, claims("dev@dev.test", now.Add(3*time.Hour))))
+	_, _ = a.Authenticate(r, identitytest.RepoA)
+	keys.hold, keys.entered = make(chan struct{}), make(chan struct{}, 8)
+	for _, after := range []time.Duration{61 * time.Minute, 62 * time.Minute} {
+		at = now.Add(after)
+		if _, err := a.Authenticate(r, identitytest.RepoA); err != nil {
+			t.Errorf("after %s a sign-in with a known key failed: %v", after, err)
+		}
+		if keys.canceled.Load() {
+			t.Fatalf("after %s a sign-in with a known key waited until the refresh timed out", after)
+		}
+	}
+	<-keys.entered
+	close(keys.hold)
 }
 
 func TestDiscoveryCustomHeaderAndClaim(t *testing.T) {

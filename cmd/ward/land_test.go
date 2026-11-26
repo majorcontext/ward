@@ -262,7 +262,7 @@ func TestLandAcceptsAnOIDCIdentityOnItsRepositoryOnly(t *testing.T) {
 	base := h.seedMain()
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	jwt := func(email string) string {
-		return iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": email, "exp": time.Now().Add(time.Hour).Unix()})
+		return iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": email, "email_verified": true, "exp": time.Now().Add(time.Hour).Unix()})
 	}
 	dev := jwt("dev@dev.test")
 	if code, body := p.do("POST", "/v1/lands", jwt("dev@other.test"), h.landBody("feature/x", nil), nil); code != http.StatusUnauthorized {
@@ -285,7 +285,7 @@ func TestLandAcceptsAnOIDCIdentityOnItsRepositoryOnly(t *testing.T) {
 
 func TestLandSendsTheAccessTokenInTheHeaderOfAProxyAndNoBearer(t *testing.T) {
 	iss := identitytest.NewIssuer(t, "k1")
-	jwt := iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": "dev@dev.test", "exp": time.Now().Add(time.Hour).Unix()})
+	jwt := iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": "dev@dev.test", "email_verified": true, "exp": time.Now().Add(time.Hour).Unix()})
 	for header, env := range map[string]map[string]string{"cf-access-token": {}, "X-Edge-Jwt": {"WARD_ACCESS_HEADER": "X-Edge-Jwt"}} {
 		t.Run(header, func(t *testing.T) {
 			h := newLandHarness(t)
