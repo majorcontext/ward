@@ -223,7 +223,7 @@ func (s *Service) save(l *Land, st State) error {
 // finish deletes the branch of a landed land, and records the end.
 func (s *Service) finish(l *Land, out outcome) error {
 	ctx := s.ctx
-	merger := s.client(grant.ScopeMerge, l.Repo)
+	merger := s.client(grant.ScopeMerge, l.Repo, l.Branch)
 	if out.kind == landed {
 		l.Tip, l.Generation, l.FastForward, l.Commits = out.landed.Tip, out.landed.Generation, out.landed.FastForward, out.landed.Commits
 		if l.Commits == nil {

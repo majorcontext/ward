@@ -156,6 +156,51 @@ func TestLandRefusesAtEnqueueAChangeThatIsTooLargeForOneLand(t *testing.T) {
 	}
 }
 
+func TestLandGrantsNameOnlyTheRefThatTheCallMoves(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true, proxied: true})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.protectMain()
+	h.awaitLand(p, h.postLand(p, "", "feature/x", map[string]any{"delete_branch": true}).ID, "landed")
+
+	h.mu.Lock()
+	seen := slices.Clone(h.grants)
+	h.mu.Unlock()
+	var landToken, deleteToken string
+	for _, g := range seen {
+		c := g.claims(t)
+		moves := g.method == http.MethodPost && (strings.HasSuffix(g.path, "/lands") || strings.HasSuffix(g.path, "/lands:trial"))
+		del := g.method == http.MethodDelete && strings.Contains(g.path, "/refs/")
+		switch {
+		case moves && !slices.Equal(c.Refs, []string{"main"}), del && !slices.Equal(c.Refs, []string{"feature/x"}):
+			t.Errorf("%s %s: grant refs = %q", g.method, g.path, c.Refs)
+		case !moves && !del && len(c.Refs) != 0:
+			t.Errorf("%s %s: a grant that moves no ref names refs %q", g.method, g.path, c.Refs)
+		}
+		if moves && strings.HasSuffix(g.path, "/lands") {
+			landToken = g.token
+		}
+		if del {
+			deleteToken = g.token
+		}
+	}
+	if landToken == "" || deleteToken == "" {
+		t.Fatalf("saw no land call or no delete: %v", seen)
+	}
+	h.branchFrom(h.mainTip(), "feature/y", "d.txt", "d\n")
+	y, err := h.readClient().Ref(t.Context(), "feature/y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tok := range map[string]string{"land grant": landToken, "delete grant": deleteToken} {
+		moved := h.motte.Client(tok)
+		if _, err := moved.SwapRef(t.Context(), "feature/y", y.Generation, base); err == nil {
+			t.Errorf("the %s of ward moved feature/y", name)
+		}
+	}
+}
+
 func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
 	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})

@@ -11,6 +11,7 @@ import (
 
 	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
+	"github.com/majorcontext/motte/grant"
 )
 
 const (
@@ -298,7 +299,7 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, sizer 
 		steps = append(steps, t.Tip)
 	}
 	for _, step := range steps {
-		creds, err := e.motte.mergeCreds(en.Repo)
+		creds, err := e.motte.mergeCreds(en.Repo, stored)
 		if err != nil {
 			return err
 		}
@@ -361,13 +362,15 @@ func (e *Engine) deleteSeeded(ctx context.Context, en Entry, stale []string, exp
 		current[r.Name] = r.Commit
 	}
 	var specs []gitremote.PushSpec
+	var named []string
 	for _, name := range stale {
 		cur, x := current[name], expect[name]
-		git, named := GitRef(name)
+		git, ok := GitRef(name)
 		switch {
-		case cur == "" || !named:
+		case cur == "" || !ok:
 		case cur == x.Commit || cur == x.Next:
 			specs = append(specs, gitremote.PushSpec{Ref: git, Lease: cur, LeaseSet: true})
+			named = append(named, name)
 		default:
 			e.log.Warn("seed cleanup skipped a ref that motte holds at another value", "mirror", en.Name, "ref", name)
 		}
@@ -382,17 +385,20 @@ func (e *Engine) deleteSeeded(ctx context.Context, en Entry, stale []string, exp
 	if err != nil {
 		return err
 	}
-	creds, err := e.motte.mergeCreds(en.Repo)
-	if err != nil {
-		return err
-	}
-	res, err := e.remote.Push(ctx, clone, e.motte.gitURL(en.Repo), creds, specs)
-	if err != nil {
-		return err
-	}
-	for _, s := range specs {
-		if !hasResult(res, s.Ref) || res[s.Ref] != gitremote.OK {
-			return fmt.Errorf("motte refused the delete of %s", s.Ref)
+	for from := 0; from < len(specs); from += grant.MaxRefs {
+		to := min(from+grant.MaxRefs, len(specs))
+		creds, err := e.motte.mergeCreds(en.Repo, named[from:to]...)
+		if err != nil {
+			return err
+		}
+		res, err := e.remote.Push(ctx, clone, e.motte.gitURL(en.Repo), creds, specs[from:to])
+		if err != nil {
+			return err
+		}
+		for _, sp := range specs[from:to] {
+			if !hasResult(res, sp.Ref) || res[sp.Ref] != gitremote.OK {
+				return fmt.Errorf("motte refused the delete of %s", sp.Ref)
+			}
 		}
 	}
 	return nil

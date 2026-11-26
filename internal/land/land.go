@@ -225,7 +225,7 @@ var ErrRefused = errors.New("land: the change cannot land")
 // refuse asks motte for a trial land of the change alone, on the tip, and returns ErrRefused when motte refuses the change
 // itself. A conflict is not a refusal, because the ref moves. A failed read or trial refuses nothing: the train decides.
 func (s *Service) refuse(ctx context.Context, req Request) error {
-	reader, merger := s.client(grant.ScopeRead, req.Repo), s.client(grant.ScopeMerge, req.Repo)
+	reader, merger := s.client(grant.ScopeRead, req.Repo), s.client(grant.ScopeMerge, req.Repo, req.Ref)
 	tip, err := reader.Ref(ctx, req.Ref)
 	if err != nil {
 		return nil
@@ -386,7 +386,7 @@ func (s *Service) work(k Key, wake chan struct{}) {
 func (s *Service) step(k Key, ls []Land) error {
 	if ls[0].State == Landing && ls[0].Call != nil {
 		ctx, end := span(s.ctx, "ward.land.resume", append(s.waited(ls[0]), attribute.String("land_id", ls[0].ID))...)
-		merger := s.client(grant.ScopeMerge, k.Repo)
+		merger := s.client(grant.ScopeMerge, k.Repo, k.Ref)
 		err := s.conclude(&ls[0], s.send(ctx, merger, &ls[0]))
 		end(err)
 		return err
@@ -404,12 +404,12 @@ func (s *Service) retireNow(k Key) {
 }
 
 // client returns a client of motte. Only the read client sets a budget, because a budget also replaces the land limit.
-func (s *Service) client(scope grant.Scope, repo string) *client.Client {
+func (s *Service) client(scope grant.Scope, repo string, refs ...string) *client.Client {
 	var opts []client.Option
 	if scope == grant.ScopeRead {
 		opts = append(opts, client.WithBudget(cmp.Or(s.cfg.ReadBudget, DefaultReadBudget)))
 	}
 	return client.New(s.cfg.URL, func(context.Context) (string, error) {
-		return grant.Signer{Kid: s.cfg.Kid, Key: s.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Subject: "ward", Exp: s.clock.Now().Add(grantLife).Unix()})
+		return grant.Signer{Kid: s.cfg.Kid, Key: s.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Refs: refs, Subject: "ward", Exp: s.clock.Now().Add(grantLife).Unix()})
 	}, opts...)
 }
