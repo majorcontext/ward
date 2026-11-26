@@ -6,6 +6,7 @@ import (
 )
 
 func TestBackoffDoublesToTheCapWithJitter(t *testing.T) {
+	t.Parallel()
 	for n, base := range map[int]time.Duration{1: time.Second, 2: 2 * time.Second, 5: 16 * time.Second, 9: 256 * time.Second, 10: backoffCap, 100: backoffCap} {
 		for range 50 {
 			if d := backoff(n); d < base || d > base+base/5 {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestConformance(t *testing.T) {
+	t.Parallel()
 	if err := gvisor.Available(); err != nil {
 		if os.Getenv("WARD_REQUIRE_GVISOR") != "" {
 			t.Fatal(err)

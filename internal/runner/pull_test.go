@@ -92,6 +92,7 @@ func startPull(t *testing.T, wardURL string, key ed25519.PrivateKey, clk tickClo
 }
 
 func TestPullRunsALeasedCheckAndPostsTheResult(t *testing.T) {
+	t.Parallel()
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	w, url := newPullWard(t, pub, "sh", "-c", "exit 0")
 	startPull(t, url, key, tickClock{make(chan time.Time)})
@@ -104,6 +105,7 @@ func TestPullRunsALeasedCheckAndPostsTheResult(t *testing.T) {
 }
 
 func TestPullStopsACheckWhenTheLeaseIsLost(t *testing.T) {
+	t.Parallel()
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	w, url := newPullWard(t, pub, "sh", "-c", "sleep 300")
 	w.renewStatus = http.StatusGone

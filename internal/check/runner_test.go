@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseRunnersPullEntry(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ name, json, err string }{
 		{"default minimum is gvisor", `[{"repo":"r","mode":"pull","kids":["a"],"env":"e"}]`, ""},
 		{"container allowed by name", `[{"repo":"r","mode":"pull","kids":["a","b"],"min_isolation":"container"}]`, ""},

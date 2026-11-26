@@ -37,6 +37,7 @@ func host(missing ...string) install.Host {
 }
 
 func TestInstallWritesTheUnitAndNamesWhatTheHostLacks(t *testing.T) {
+	t.Parallel()
 	root, grant := t.TempDir(), filepath.Join(t.TempDir(), "grant")
 	if err := os.WriteFile(grant, []byte("g"), 0o600); err != nil {
 		t.Fatal(err)

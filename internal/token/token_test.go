@@ -11,6 +11,7 @@ import (
 )
 
 func TestVerify(t *testing.T) {
+	t.Parallel()
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	_, otherKey, _ := ed25519.GenerateKey(rand.Reader)
 	now := time.Unix(1000, 0)

@@ -36,6 +36,7 @@ func open(t *testing.T, store check.Store, repo string) {
 }
 
 func TestExpiredLeaseReturnsTheRequestToTheQueue(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		q, store := newQueue(t)
 		open(t, store, "r")
@@ -72,6 +73,7 @@ func TestExpiredLeaseReturnsTheRequestToTheQueue(t *testing.T) {
 }
 
 func TestLeaseRefusesAnUnknownRunnerAndAWeakSandbox(t *testing.T) {
+	t.Parallel()
 	q, store := newQueue(t)
 	open(t, store, "r")
 	for _, c := range []struct {

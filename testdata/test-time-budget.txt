@@ -1,4 +1,4 @@
-# Time budgets for go test, read by internal/testtime.
+# Time budgets for go test, read by testtime (majorcontext/tools).
 # CI enforces them in its reference environment. The land check runs the tests for pass or fail only.
 #   leaf SECONDS                  a test that has no subtests
 #   package PATH|default SECONDS  wall time of one package, run alone (go test -p 1); PATH@JOB sets it for one job
@@ -6,6 +6,9 @@
 # A test with subtests is not checked, because a parallel parent reports the time of the whole package.
 # A change that makes a test or package slower raises its number in the same diff and states why.
 
+# testtime multiplies every time limit by max(1, measured / calibrate). 5 is above any runner, so the factor stays 1 and the limits stay
+# fixed. Replace it with the calibration time that the CI job prints on its reference runner to turn the scaling on.
+calibrate 5
 leaf 10
 package default 10
 # The container and gvisor suites start a container for each case and pull the test image once. A run of the two takes a few seconds with a warm image.

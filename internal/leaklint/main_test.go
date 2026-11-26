@@ -6,6 +6,7 @@ import (
 )
 
 func TestFind(t *testing.T) {
+	t.Parallel()
 	terms := parseTerms("Foo\nbar-baz\n198.51.\n\n")
 	cases := []struct {
 		line string
@@ -26,6 +27,7 @@ func TestFind(t *testing.T) {
 }
 
 func TestRunEmptyList(t *testing.T) {
+	t.Parallel()
 	if _, err := run("", true); err == nil {
 		t.Error("empty list passed in CI")
 	}

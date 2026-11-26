@@ -21,6 +21,7 @@ func entry(name, mode, sha string) api.TreeEntry {
 }
 
 func TestMotteFetcherWritesTheExactTree(t *testing.T) {
+	t.Parallel()
 	blobs := map[string]string{"b1": "echo hi\n", "b2": "package x\n", "b3": "run.sh", "b4": "deep\n"}
 	for _, tc := range []struct {
 		name, commitTree, want string

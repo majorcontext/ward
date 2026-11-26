@@ -10,7 +10,7 @@ Read `docs/architecture.md` before you change behavior. It is the contract. A di
 
 This repository is public. No file, commit message, branch name, pull request title or body, or comment may name an internal project, host, address, bucket, person or product of a caller. Name motte, which is public. Use "a control plane" or "a compute service" for any other caller or dependency.
 
-The CI job `leak` runs `internal/leaklint` against the secret `LEAK_DENYLIST`. The job fails when the secret is unset. Never commit denylist content.
+The CI job `leak` runs `leaklint` of `majorcontext/tools` against the secret `LEAK_DENYLIST`. The job fails when the secret is unset. Never commit denylist content.
 
 ## Tests
 
@@ -18,9 +18,10 @@ The CI job `leak` runs `internal/leaklint` against the secret `LEAK_DENYLIST`. T
 - Write a unit test only for pure code: codecs, the token, ref pattern matching.
 - Name the failure a test catches before you write it.
 - Added test lines stay at or below added code lines.
-- No wall-clock waits in tests: `time.Sleep` and `time.After` only inside a `synctest.Test` bubble; otherwise use channels. A wait that no bubble can hold, such as a cross-process wait, carries a `//lint:allow wallclock REASON` comment on its line. The analyzer `internal/lint/wallclock` enforces this.
+- No wall-clock waits in tests: `time.Sleep` and `time.After` only inside a `synctest.Test` bubble; otherwise use channels. A wait that no bubble can hold, such as a cross-process wait, carries a `//lint:allow wallclock REASON` comment on its line. The analyzer `wallclock` of `majorcontext/tools` enforces this.
+- Every top-level `TestXxx` calls `t.Parallel()`, or `testdata/serial-tests.txt` lists it as `package TestName reason`. The analyzer `paralleltests` enforces this.
 - Run Go tests with `-race`.
-- A test is at most 10 s and a package at most 10 s, unless `testdata/test-time-budget.txt` says more. Make a slow test fast; raise a budget only with a stated reason in the same change. `internal/testtime` enforces the budget in CI only, in its reference environment, where each package runs alone (`go test -p 1`) and a package time is its own cost. The land check `test` runs every test with `-race` and checks correctness, not time.
+- A test is at most 10 s and a package at most 10 s, unless `testdata/test-time-budget.txt` says more. Make a slow test fast; raise a budget only with a stated reason in the same change. `testtime` of `majorcontext/tools` enforces the budget in CI only, in its reference environment, where each package runs alone (`go test -p 1`) and a package time is its own cost. The land check `test` runs every test with `-race` and checks correctness, not time.
 
 ## Provider seams
 
@@ -30,7 +31,7 @@ The CI job `leak` runs `internal/leaklint` against the secret `LEAK_DENYLIST`. T
 - Name a provider host only in a file of `testdata/provider-hosts.txt`.
 - Update the seams table in the same diff as a change to a seam.
 - A seam that does not meet the rule is a gap row in the table and a line of `testdata/seam-gaps.txt`. The list only shrinks.
-- `internal/seams` enforces these rules in `go test`.
+- `internal/seams` enforces these rules in `go test`. It stays in this repository because the shared `seams` package has no `Contract:` row, which the table of ward uses.
 
 ## Comments
 
@@ -55,10 +56,10 @@ Write no comment by default. A comment states why: a constraint, a hazard, or a 
 ```bash
 go build ./...
 go vet ./...
-go run ./internal/lint/cmd/lint ./...
-go test -race -count=1 -p 1 -json ./... | go run ./internal/testtime
+go tool lint ./...
+go test -race -count=1 -p 1 -json ./... | go tool testtime
 test -z "$(gofmt -l .)"
-LEAK_DENYLIST="$(cat denylist.txt)" go run ./internal/leaklint
+LEAK_DENYLIST="$(cat denylist.txt)" go tool leaklint
 ```
 
 `ward check` runs the checks of `.ward/checks.json` locally. The `chart` and `leak` jobs stay on GitHub.
