@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -21,6 +22,7 @@ const (
 )
 
 type landRequest struct {
+	ID           string `json:"id"`
 	Repo         string `json:"repo"`
 	Ref          string `json:"ref"`
 	Branch       string `json:"branch"`
@@ -106,10 +108,26 @@ func (s *Server) land(w http.ResponseWriter, r *http.Request) {
 	if req.Ref == "" {
 		req.Ref = "main"
 	}
-	l, err := s.d.Land.Enqueue(r.Context(), land.Request{Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch})
+	if !validLandID(req.ID) {
+		writeError(w, codeInvalidBody, "id is 8 to 48 characters of a-z, A-Z, 0-9, _ and -, and begins with a letter or a digit")
+		return
+	}
+	if req.ID != "" {
+		if l, ok, err := s.d.Land.Repeat(r.Context(), land.Request{ID: req.ID, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch}); err != nil {
+			s.landEnqueueError(w, err)
+			return
+		} else if ok {
+			writeJSON(w, http.StatusAccepted, viewOf(l))
+			return
+		}
+	}
+	if !s.d.Land.RefAllowed(req.Ref) {
+		writeError(w, codeRefNotAllowed, "no pattern of the land configuration names the ref")
+		return
+	}
+	l, err := s.d.Land.Enqueue(r.Context(), land.Request{ID: req.ID, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch})
 	if err != nil {
-		s.d.Logger.Error("record land", "error", err.Error())
-		writeError(w, codeInternal, "internal error")
+		s.landEnqueueError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, viewOf(l))
@@ -160,4 +178,31 @@ func (s *Server) getLand(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, viewOf(l))
 	}
+}
+
+// validLandID accepts an empty id and an id of 8 to 48 characters that begins with a letter or a digit. The id becomes a
+// land id of motte with a suffix, and part of a ref name, so it holds only what both accept.
+func validLandID(id string) bool {
+	if id == "" {
+		return true
+	}
+	if len(id) < 8 || len(id) > 48 {
+		return false
+	}
+	for i, c := range id {
+		alnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		if !alnum && (i == 0 || c != '_' && c != '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) landEnqueueError(w http.ResponseWriter, err error) {
+	if errors.Is(err, land.ErrIDInUse) {
+		writeError(w, codeLandIDInUse, "the id belongs to another land")
+		return
+	}
+	s.d.Logger.Error("record land", "error", err.Error())
+	writeError(w, codeInternal, "internal error")
 }

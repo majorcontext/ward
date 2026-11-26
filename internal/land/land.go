@@ -69,12 +69,16 @@ type Config struct {
 	Key ed25519.PrivateKey
 	// ReadBudget is the time limit of one read of motte. Zero means DefaultReadBudget.
 	ReadBudget time.Duration
+	// Refs lists the ref patterns that a land may name: a stored ref name, or a prefix that ends in *. Nil means main only.
+	Refs []string
 	// BatchMax is the most lands that one check run judges. Zero means DefaultBatchMax, and 1 judges each land alone.
 	BatchMax int
 }
 
 // Request names the branch to land and where.
 type Request struct {
+	// ID is chosen by the caller. A repeat of an accepted ID answers the land that it made. Empty means ward chooses one.
+	ID           string
 	Repo         string
 	Ref          string
 	Branch       string
@@ -166,23 +170,68 @@ func (s *Service) sweep(ctx context.Context) {
 // Wait returns when every queue has stopped. Call it after the context of Start ends.
 func (s *Service) Wait() { s.wg.Wait() }
 
-// Enqueue records a land in state queued and wakes the queue of its ref.
-func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return Land{}, err
+// ErrIDInUse means that the ID of a request belongs to a land of another repository, ref or branch.
+var ErrIDInUse = errors.New("land: the id belongs to another land")
+
+// RefAllowed reports whether a pattern of the configuration names ref.
+func (s *Service) RefAllowed(ref string) bool {
+	refs := s.cfg.Refs
+	if refs == nil {
+		refs = []string{"main"}
 	}
-	l := Land{ID: hex.EncodeToString(b[:]), Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
+	for _, p := range refs {
+		if prefix, wild := strings.CutSuffix(p, "*"); wild {
+			if strings.HasPrefix(ref, prefix) {
+				return true
+			}
+		} else if p == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// Enqueue records a land in state queued and wakes the queue of its ref. A repeat of a request ID answers the land that the
+// first request made, and ErrIDInUse answers a request that differs from it.
+func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
+	id := req.ID
+	if id == "" {
+		var b [16]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return Land{}, err
+		}
+		id = hex.EncodeToString(b[:])
+	} else if l, ok, err := s.Repeat(ctx, req); ok || err != nil {
+		return l, err
+	}
+	l := Land{ID: id, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
 	ctx, end := span(ctx, "ward.land.enqueue", attribute.String("land_id", l.ID))
 	s.queued.Store(l.ID, s.clock.Now())
 	err := s.store.InsertLand(ctx, l)
 	end(err)
 	if err != nil {
 		s.queued.Delete(l.ID)
+		if req.ID != "" {
+			if again, ok, rerr := s.Repeat(ctx, req); ok || rerr != nil {
+				return again, rerr
+			}
+		}
 		return Land{}, err
 	}
 	s.kick(Key{req.Repo, req.Ref})
 	return l, nil
+}
+
+// Repeat returns the land that req.ID made when it exists and agrees with req.
+func (s *Service) Repeat(ctx context.Context, req Request) (Land, bool, error) {
+	l, ok, err := s.store.Land(ctx, req.ID)
+	switch {
+	case err != nil || !ok:
+		return Land{}, false, err
+	case l.Repo != req.Repo || l.Ref != req.Ref || l.Branch != req.Branch || l.DeleteBranch != req.DeleteBranch:
+		return Land{}, true, ErrIDInUse
+	}
+	return l, true, nil
 }
 
 // Get returns a land. The baseline state is known, or the state of the land now when known is empty. With a positive wait,

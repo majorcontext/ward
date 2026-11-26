@@ -86,6 +86,10 @@ spec:
             - name: WARD_RUNNERS
               value: {{ include "ward.runners" . | quote }}
             {{- end }}
+            {{- if .Values.landRefs }}
+            - name: WARD_LAND_REFS
+              value: {{ join "," .Values.landRefs | quote }}
+            {{- end }}
             {{- with .Values.githubApiUrl }}
             - name: WARD_GITHUB_API_URL
               value: {{ . | quote }}

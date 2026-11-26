@@ -54,6 +54,10 @@ mirrors: []
 # an image digest.
 runners: []
 
+# landRefs lists the ref patterns that a land may name (a ref name, or a prefix that ends in *). It sets WARD_LAND_REFS.
+# Empty means main only.
+landRefs: []
+
 # githubApiUrl sets WARD_GITHUB_API_URL, for a GitHub Enterprise Server.
 githubApiUrl: ""
 
