@@ -102,7 +102,7 @@ runner:
   checkKey: {kid: "", name: "", key: key}
   # motte names the Secret that holds a read grant of motte for the repositories to check.
   motte: {url: "", grantSecret: {name: "", key: grant}}
-  # sandbox is auto, gvisor or container. auto picks gvisor when runsc is on the path.
+  # sandbox is auto, gvisor or container. auto means gvisor and fails at start without runsc; container is the only weaker choice.
   sandbox: auto
   engine: podman
   # sandboxImage is the OCI image in which each check runs.

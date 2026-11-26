@@ -53,7 +53,7 @@ func (r *Runner) poll(ctx context.Context) (*runnerproto.Lease, error) {
 	if err != nil {
 		return nil, err
 	}
-	return runnerproto.PollLease(ctx, r.o.HTTP, r.o.WardURL, tok, r.o.Isolation)
+	return runnerproto.PollLease(ctx, r.o.HTTP, r.o.WardURL, tok, r.o.Sandbox.Isolation())
 }
 
 // runLease runs the check of a lease and renews the lease meanwhile. It cancels the check when ward ends the lease.

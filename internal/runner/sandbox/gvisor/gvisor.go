@@ -8,6 +8,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/runner/sandbox"
 	"github.com/majorcontext/ward/internal/runner/sandbox/container"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 // Runtime is the OCI runtime name of gVisor.
@@ -38,6 +39,8 @@ func New(cfg container.Config) (*Sandbox, error) {
 	}
 	return &Sandbox{inner: inner}, nil
 }
+
+func (s *Sandbox) Isolation() runnerproto.Isolation { return runnerproto.IsolationGVisor }
 
 func (s *Sandbox) Run(ctx context.Context, spec sandbox.Spec) (sandbox.Outcome, error) {
 	return s.inner.Run(ctx, spec)

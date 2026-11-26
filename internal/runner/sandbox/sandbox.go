@@ -6,6 +6,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 // Spec is one run.
@@ -31,6 +33,9 @@ type Outcome struct {
 // Sandbox runs a check. Run returns an error only when the sandbox itself fails or when ctx ends before the argv does.
 // A missing argv[0] ends with ExitCode 127. When Run returns, no process of the run is left.
 type Sandbox interface {
+	// Isolation is the level at which Run isolates the argv. It is a property of the implementation: it never changes, and
+	// the runner reports it to ward at each poll.
+	Isolation() runnerproto.Isolation
 	Run(ctx context.Context, spec Spec) (Outcome, error)
 }
 

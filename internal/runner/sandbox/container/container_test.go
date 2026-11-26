@@ -8,6 +8,7 @@ import (
 	"github.com/majorcontext/ward/internal/runner/sandbox"
 	"github.com/majorcontext/ward/internal/runner/sandbox/container"
 	"github.com/majorcontext/ward/internal/runner/sandbox/sandboxtest"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 func engine(t *testing.T) string {
@@ -33,7 +34,7 @@ func TestConformance(t *testing.T) {
 	if image == "" {
 		image = "busybox:1.37"
 	}
-	sandboxtest.Run(t, sandboxtest.Impl{Isolated: true, New: func(t *testing.T) sandbox.Sandbox {
+	sandboxtest.Run(t, sandboxtest.Impl{Isolated: true, Isolation: runnerproto.IsolationContainer, New: func(t *testing.T) sandbox.Sandbox {
 		s, err := container.New(container.Config{Engine: e, Image: image})
 		if err != nil {
 			t.Fatal(err)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/procgroup"
 	"github.com/majorcontext/ward/internal/runner/sandbox"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 const (
@@ -61,6 +62,14 @@ type Sandbox struct {
 }
 
 var _ sandbox.Sandbox = (*Sandbox)(nil)
+
+// Isolation is the level of the default runtime of the engine, or of the runtime that cfg names.
+func (s *Sandbox) Isolation() runnerproto.Isolation {
+	if s.cfg.Runtime == "runsc" {
+		return runnerproto.IsolationGVisor
+	}
+	return runnerproto.IsolationContainer
+}
 
 // New returns a sandbox. It fills the defaults of cfg.
 func New(cfg Config) (*Sandbox, error) {

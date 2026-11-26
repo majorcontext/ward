@@ -80,9 +80,8 @@ func startPull(t *testing.T, wardURL string, key ed25519.PrivateKey, clk tickClo
 		Token: func(repo string, exp time.Time) (string, error) {
 			return runnerproto.MintCheckToken("k", key, repo, "test", exp)
 		},
-		Isolation:   runnerproto.IsolationGVisor,
 		Fetch:       func(context.Context, runnerproto.Request, string) error { return nil },
-		Sandbox:     fake.Sandbox{},
+		Sandbox:     fake.Sandbox{Level: runnerproto.IsolationGVisor},
 		Concurrency: 1,
 		WorkDir:     t.TempDir(),
 		Clock:       clk,

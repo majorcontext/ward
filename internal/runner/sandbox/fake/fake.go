@@ -10,11 +10,15 @@ import (
 
 	"github.com/majorcontext/ward/internal/procgroup"
 	"github.com/majorcontext/ward/internal/runner/sandbox"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
-type Sandbox struct{}
+// Sandbox runs the argv with no isolation. Level is the isolation that it reports, so a test can play a runner of any level.
+type Sandbox struct{ Level runnerproto.Isolation }
 
 var _ sandbox.Sandbox = Sandbox{}
+
+func (s Sandbox) Isolation() runnerproto.Isolation { return s.Level }
 
 func (Sandbox) Run(ctx context.Context, spec sandbox.Spec) (sandbox.Outcome, error) {
 	runCtx, cancel := context.WithTimeout(ctx, spec.Timeout)

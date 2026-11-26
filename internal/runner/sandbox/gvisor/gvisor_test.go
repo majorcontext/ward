@@ -8,6 +8,7 @@ import (
 	"github.com/majorcontext/ward/internal/runner/sandbox/container"
 	"github.com/majorcontext/ward/internal/runner/sandbox/gvisor"
 	"github.com/majorcontext/ward/internal/runner/sandbox/sandboxtest"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 func TestConformance(t *testing.T) {
@@ -25,7 +26,7 @@ func TestConformance(t *testing.T) {
 	if engine == "" {
 		engine = "docker"
 	}
-	sandboxtest.Run(t, sandboxtest.Impl{Isolated: true, New: func(t *testing.T) sandbox.Sandbox {
+	sandboxtest.Run(t, sandboxtest.Impl{Isolated: true, Isolation: runnerproto.IsolationGVisor, New: func(t *testing.T) sandbox.Sandbox {
 		s, err := gvisor.New(container.Config{Engine: engine, Image: image})
 		if err != nil {
 			t.Fatal(err)

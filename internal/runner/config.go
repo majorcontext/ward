@@ -70,13 +70,15 @@ func Load(getenv func(string) string) (Config, error) {
 		engine = "docker"
 	}
 	cc := container.Config{Engine: engine, Image: getenv("WARD_RUNNER_IMAGE"), Network: getenv("WARD_RUNNER_NETWORK"), Memory: getenv("WARD_RUNNER_MEMORY")}
-	if c.SandboxKind = getenv("WARD_RUNNER_SANDBOX"); c.SandboxKind == "" {
-		c.SandboxKind = "auto"
-	}
-	sb, err := newSandbox(&c.SandboxKind, cc)
+	kind, err := resolveSandbox(getenv("WARD_RUNNER_SANDBOX"), gvisor.Available())
 	if err != nil {
 		return c, err
 	}
+	sb, err := newSandbox(kind, cc)
+	if err != nil {
+		return c, err
+	}
+	c.SandboxKind = string(sb.Isolation())
 	fetch := MotteFetcher{URL: getenv("WARD_RUNNER_MOTTE_URL"), Grant: func(context.Context) (string, error) { return readText(grantFile) }}
 	c.Options = Options{
 		WardURL: getenv("WARD_RUNNER_WARD_URL"),
@@ -86,7 +88,6 @@ func Load(getenv func(string) string) (Config, error) {
 		RunnerToken: func(exp time.Time) (string, error) {
 			return runnerproto.MintRunnerToken(kid, ed25519.PrivateKey(key), "ward-runner", exp)
 		},
-		Isolation:   runnerproto.Isolation(c.SandboxKind),
 		Fetch:       fetch.Fetch,
 		Sandbox:     sb,
 		Concurrency: conc,
@@ -100,21 +101,34 @@ func Load(getenv func(string) string) (Config, error) {
 	return c, nil
 }
 
-func newSandbox(kind *string, cc container.Config) (sandbox.Sandbox, error) {
-	switch *kind {
-	case "auto":
-		if gvisor.Available() == nil {
-			*kind = "gvisor"
-		} else {
-			*kind = "container"
+// resolveSandbox returns the sandbox kind for the setting of WARD_RUNNER_SANDBOX. The default and auto mean gvisor, the
+// default minimum isolation of a repository, so a runner without runsc fails at start. Auto never falls back to a container:
+// a weaker sandbox needs the explicit setting container. runsc is the result of gvisor.Available.
+func resolveSandbox(setting string, runsc error) (runnerproto.Isolation, error) {
+	switch setting {
+	case "", "auto", "gvisor":
+		if runsc != nil {
+			return "", fmt.Errorf("WARD_RUNNER_SANDBOX=%s needs runsc: %w; install it, or set WARD_RUNNER_SANDBOX=container for a repository that allows it", cmpOr(setting, "auto"), runsc)
 		}
-		return newSandbox(kind, cc)
-	case "gvisor":
-		return gvisor.New(cc)
+		return runnerproto.IsolationGVisor, nil
 	case "container":
-		return container.New(cc)
+		return runnerproto.IsolationContainer, nil
 	}
-	return nil, fmt.Errorf("WARD_RUNNER_SANDBOX must be auto, gvisor or container, not %q", *kind)
+	return "", fmt.Errorf("WARD_RUNNER_SANDBOX must be auto, gvisor or container, not %q", setting)
+}
+
+func cmpOr(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func newSandbox(kind runnerproto.Isolation, cc container.Config) (sandbox.Sandbox, error) {
+	if kind == runnerproto.IsolationGVisor {
+		return gvisor.New(cc)
+	}
+	return container.New(cc)
 }
 
 func readText(path string) (string, error) {

@@ -20,7 +20,7 @@ The runner reports its sandbox in each poll. ward refuses a runner whose sandbox
 - A key pair for check tokens. Put the public key in `WARD_TRUSTED_KEYS` of ward with a `kid` and the scope `check`. Give the private key (base64) to the runner with `WARD_RUNNER_KID` and `WARD_RUNNER_KEY_FILE`.
 - A `read` grant of motte for the repositories, in the file of `WARD_RUNNER_MOTTE_GRANT_FILE`. Replace the file before the grant expires: the runner reads it for each fetch.
 - A container engine (`docker` or `podman`), and an OCI image in which the checks run. The image holds the tools that the checks call. The default network is `none`, so the image must hold what a check needs, or you set `WARD_RUNNER_NETWORK`.
-- For gVisor, `runsc` installed and registered as a runtime of the engine. With `WARD_RUNNER_SANDBOX=auto` the runner uses it when `runsc` is on the path. Set `gvisor` to refuse to start without it.
+- For gVisor, `runsc` installed and registered as a runtime of the engine. `WARD_RUNNER_SANDBOX=auto` (the default) means `gvisor`, and the runner fails at start without `runsc`. It never drops to a container. Set `container` to run without `runsc`, for repositories whose entry allows it.
 
 ## The host contract
 

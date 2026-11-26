@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/runner/sandbox"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 // Impl describes the implementation under test. Commands use only sh, cat, sleep and test.
@@ -19,6 +20,8 @@ type Impl struct {
 	New func(t *testing.T) sandbox.Sandbox
 	// Isolated is true when the implementation hides the host file system outside Dir from the check.
 	Isolated bool
+	// Isolation is the level that the implementation must report.
+	Isolation runnerproto.Isolation
 }
 
 type syncBuffer struct {
@@ -75,6 +78,14 @@ func runCached(t *testing.T, s sandbox.Sandbox, dir, cache string, timeout time.
 func Run(t *testing.T, impl Impl) {
 	t.Helper()
 	const long = time.Minute
+	t.Run("isolation", func(t *testing.T) {
+		if got := impl.New(t).Isolation(); got != impl.Isolation {
+			t.Errorf("Isolation() = %q, want %q", got, impl.Isolation)
+		}
+		if impl.Isolated && impl.Isolation.Rank() == 0 {
+			t.Errorf("an isolated implementation reports %q, which no repository accepts", impl.Isolation)
+		}
+	})
 	t.Run("exit code", func(t *testing.T) {
 		s := impl.New(t)
 		for _, code := range []string{"0", "3"} {

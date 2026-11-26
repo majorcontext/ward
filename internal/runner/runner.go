@@ -43,8 +43,7 @@ type Options struct {
 	// CacheDir is the root of the durable caches. Each repository and env gets a directory under it, so a check sees only
 	// the cache of its own repository. Empty means no cache.
 	CacheDir string
-	// Isolation is the sandbox level that Pull reports to ward, and RunnerToken returns a runner token.
-	Isolation   runnerproto.Isolation
+	// RunnerToken returns a runner token. Pull reports the isolation of Sandbox with it.
 	RunnerToken func(exp time.Time) (string, error)
 	Clock       check.Clock
 	Log         *slog.Logger
