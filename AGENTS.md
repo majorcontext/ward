@@ -31,7 +31,7 @@ The CI job `leak` runs `leaklint` of `majorcontext/tools` against the secret `LE
 - Name a provider host only in a file of `testdata/provider-hosts.txt`.
 - Update the seams table in the same diff as a change to a seam.
 - A seam that does not meet the rule is a gap row in the table and a line of `testdata/seam-gaps.txt`. The list only shrinks.
-- `internal/seams` enforces these rules in `go test`. It stays in this repository because the shared `seams` package has no `Contract:` row, which the table of ward uses.
+- The package `seams` of `majorcontext/tools` enforces these rules in `go test`, through `internal/seamcheck`.
 
 ## Comments
 

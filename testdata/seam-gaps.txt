@@ -1,2 +1,2 @@
 # Seams of docs/architecture.md "Provider seams" that miss the rule, one seam name per line with the reason.
-# The list only shrinks: internal/seams compares it with the gap rows of the table and with its merge-base copy.
+# The list only shrinks: the shared `seams` check compares it with the gap rows of the table and with its merge-base copy.
