@@ -156,19 +156,16 @@ func (e *Engine) RequestReset() { e.request(func(w *wants) { w.reset = true }) }
 
 // RequestReconcile asks the worker of a mirror for a Reconcile. It returns at once.
 func (e *Engine) RequestReconcile(name string) bool {
-	e.mu.Lock()
-	w := e.workers[name]
-	e.mu.Unlock()
-	if w == nil {
-		if _, ok := e.entries[name]; !ok {
-			return false
-		}
-		e.mu.Lock()
-		e.pending[name] = true
-		e.mu.Unlock()
-		return true
+	if _, ok := e.entries[name]; !ok {
+		return false
 	}
-	w.requestReconcile()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if w := e.workers[name]; w != nil {
+		w.requestReconcile()
+	} else {
+		e.pending[name] = true
+	}
 	return true
 }
 
