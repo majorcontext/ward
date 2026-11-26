@@ -50,6 +50,31 @@ func (h *harness) fetchAll() {
 	h.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*")
 }
 
+// histBase returns the merge base of two refs of motte whose commits come from the in-memory history, so that no git
+// process runs. It returns "" when the first-parent chains of the history do not meet.
+func (h *harness) histBase(branch, ref string) string {
+	seen := map[string]bool{}
+	for _, name := range []string{branch, ref} {
+		r, err := h.readClient().Ref(h.t.Context(), name)
+		if err != nil {
+			return ""
+		}
+		for c := r.Commit; c != ""; c = h.hist.parent[c] {
+			if _, ok := h.hist.files[c]; !ok || (seen[c] && name == branch) {
+				break
+			}
+			if name == ref && seen[c] {
+				return c
+			}
+			seen[c] = name == branch
+			if h.hist.parent[c] == c {
+				break
+			}
+		}
+	}
+	return ""
+}
+
 // landBody makes the body of a land request, with the base that git finds for the branch and the ref.
 func (h *harness) landBody(branch string, extra map[string]any) []byte {
 	m := map[string]any{"repo": h.repo, "branch": branch}
@@ -61,9 +86,13 @@ func (h *harness) landBody(branch string, extra map[string]any) []byte {
 		if ref == "" {
 			ref = "main"
 		}
-		h.fetchAll()
-		if out, err := exec.Command("git", "-C", h.work, "merge-base", "refs/remotes/origin/"+branch, "refs/remotes/origin/"+ref).Output(); err == nil {
-			m["base"] = strings.TrimSpace(string(out))
+		if base := h.histBase(branch, ref); base != "" {
+			m["base"] = base
+		} else {
+			h.fetchAll()
+			if out, err := exec.Command("git", "-C", h.work, "merge-base", "refs/remotes/origin/"+branch, "refs/remotes/origin/"+ref).Output(); err == nil {
+				m["base"] = strings.TrimSpace(string(out))
+			}
 		}
 	}
 	b, _ := json.Marshal(m)
