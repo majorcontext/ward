@@ -1,13 +1,9 @@
 package main
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,78 +11,70 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/token"
+	"github.com/majorcontext/ward/runnerproto"
 )
 
 const (
-	runnerSecret = "runner-secret-0123456789"
-	runnerEnv    = "env1"
-	unitChecks   = `{"checks":[{"name":"unit","run":["make","test"],"timeout_seconds":60}]}`
+	runnerEnv  = "env1"
+	runnerKid  = "c"
+	unitChecks = `{"checks":[{"name":"unit","run":["make","test"],"timeout_seconds":60}]}`
 )
 
-type runnerRequest struct {
-	RequestID string `json:"request_id"`
-	Repo      string `json:"repo"`
-	Tree      string `json:"tree"`
-	Commit    string `json:"commit"`
-	Check     struct {
-		Name           string   `json:"name"`
-		Run            []string `json:"run"`
-		TimeoutSeconds int      `json:"timeout_seconds"`
-	} `json:"check"`
-	CheckHash string `json:"check_hash"`
-	Env       string `json:"env"`
-}
+type runnerRequest = runnerproto.Request
 
-// fakeRunner is the runner of a test. It checks the signature of each request and hands the request to the test.
+// fakeRunner is the runner of a test. It polls ward for a lease, as a pull runner does, only when the test asks. It never
+// renews a lease.
 type fakeRunner struct {
-	t      *testing.T
-	srv    *httptest.Server
-	reqs   chan runnerRequest
-	status atomic.Int32
-	bad    atomic.Int32
+	t   *testing.T
+	h   *harness
+	url atomic.Value
 }
 
 func newRunner(t *testing.T) *fakeRunner {
 	t.Helper()
-	r := &fakeRunner{t: t, reqs: make(chan runnerRequest, 64)}
-	r.status.Store(http.StatusOK)
-	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		body, _ := io.ReadAll(req.Body)
-		mac := hmac.New(sha256.New, []byte(runnerSecret))
-		mac.Write(body)
-		if req.Header.Get("Ward-Signature") != "sha256="+hex.EncodeToString(mac.Sum(nil)) {
-			r.bad.Add(1)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		var rr runnerRequest
-		if json.Unmarshal(body, &rr) != nil {
-			r.bad.Add(1)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		code := int(r.status.Load())
-		r.reqs <- rr
-		w.WriteHeader(code)
-	}))
-	t.Cleanup(func() {
-		r.srv.Close()
-		if n := r.bad.Load(); n != 0 {
-			t.Errorf("%d runner requests had a bad signature or body", n)
-		}
-	})
-	return r
+	return &fakeRunner{t: t}
 }
 
-// next returns the next request that the runner got.
+// attach points the runner at the ward of the harness.
+func (r *fakeRunner) attach(h *harness, url string) {
+	r.h = h
+	r.url.Store(url)
+}
+
+func (r *fakeRunner) poll(ctx context.Context) (*runnerproto.Lease, error) {
+	tok, err := runnerproto.MintRunnerToken(runnerKid, r.h.callerSK, "fake", time.Now().Add(time.Minute))
+	if err != nil {
+		return nil, err
+	}
+	return runnerproto.PollLease(ctx, http.DefaultClient, r.url.Load().(string), tok, runnerproto.IsolationGVisor)
+}
+
+// next returns the next request that the runner leases.
 func (r *fakeRunner) next() runnerRequest {
 	r.t.Helper()
-	select {
-	case rr := <-r.reqs:
-		return rr
-	case <-time.After(20 * time.Second): //lint:allow wallclock a wait on a request from another goroutine that no bubble holds
-		r.t.Fatal("the runner got no request")
-		return runnerRequest{}
+	ctx, cancel := context.WithTimeout(r.t.Context(), 20*time.Second) //lint:allow wallclock a wait on a request from another goroutine that no bubble holds
+	defer cancel()
+	for ctx.Err() == nil {
+		if lease, err := r.poll(ctx); err == nil && lease != nil {
+			return lease.Request
+		}
+	}
+	r.t.Fatal("the runner got no request")
+	return runnerRequest{}
+}
+
+// extra returns the requests that the runner can lease now, after a short wait.
+func (r *fakeRunner) extra() []runnerRequest {
+	r.t.Helper()
+	var out []runnerRequest
+	for {
+		ctx, cancel := context.WithTimeout(r.t.Context(), 300*time.Millisecond) //lint:allow wallclock a wait for a request that no bubble holds
+		lease, err := r.poll(ctx)
+		cancel()
+		if err != nil || lease == nil {
+			return out
+		}
+		out = append(out, lease.Request)
 	}
 }
 

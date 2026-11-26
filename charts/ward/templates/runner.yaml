@@ -1,7 +1,6 @@
 {{- if .Values.runner.enabled }}
 {{- $r := .Values.runner -}}
 {{- $_ := required "runner.image.repository is required" $r.image.repository -}}
-{{- $_ := required "runner.hookSecret.name is required" $r.hookSecret.name -}}
 {{- $_ := required "runner.checkKey.name is required" $r.checkKey.name -}}
 {{- $_ := required "runner.checkKey.kid is required" $r.checkKey.kid -}}
 {{- $_ := required "runner.motte.url is required" $r.motte.url -}}
@@ -32,16 +31,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             privileged: {{ $r.privileged }}
-          ports:
-            - name: http
-              containerPort: {{ $r.listenPort }}
           env:
-            - name: WARD_RUNNER_LISTEN
-              value: {{ printf ":%v" $r.listenPort | quote }}
             - name: WARD_RUNNER_WARD_URL
               value: {{ default (printf "http://%s:%v" .Release.Name .Values.service.port) $r.wardUrl | quote }}
-            - name: WARD_RUNNER_SECRET_FILE
-              value: /var/run/ward-runner/hook/secret
             - name: WARD_RUNNER_KID
               value: {{ $r.checkKey.kid | quote }}
             - name: WARD_RUNNER_KEY_FILE
@@ -67,15 +59,10 @@ spec:
             {{- with $r.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: http
           resources:
             {{- toYaml $r.resources | nindent 12 }}
           volumeMounts:
             - {name: work, mountPath: /var/lib/ward-runner}
-            - {name: hook, mountPath: /var/run/ward-runner/hook, readOnly: true}
             - {name: key, mountPath: /var/run/ward-runner/key, readOnly: true}
             - {name: grant, mountPath: /var/run/ward-runner/grant, readOnly: true}
             {{- with $r.extraVolumeMounts }}
@@ -85,10 +72,6 @@ spec:
         - name: work
           emptyDir:
             sizeLimit: {{ $r.workDirSize }}
-        - name: hook
-          secret:
-            secretName: {{ $r.hookSecret.name }}
-            items: [{key: {{ $r.hookSecret.key }}, path: secret}]
         - name: key
           secret:
             secretName: {{ $r.checkKey.name }}
@@ -100,18 +83,4 @@ spec:
         {{- with $r.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Release.Name }}-runner
-  labels:
-    {{- include "ward.runner.labels" . | nindent 4 }}
-spec:
-  selector:
-    {{- include "ward.runner.selector" . | nindent 4 }}
-  ports:
-    - name: http
-      port: {{ $r.listenPort }}
-      targetPort: http
 {{- end }}

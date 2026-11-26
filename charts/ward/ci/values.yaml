@@ -28,6 +28,6 @@ mirrors:
     githubApp: {appId: 123, installationId: 456, secret: gadgets-app, key: private-key.pem}
 runners:
   - repo: native:widgets
-    url: http://runner.example/ward
+    kids: [metal-1]
+    minIsolation: container
     env: sha256:1111111111111111111111111111111111111111111111111111111111111111
-    secret: {name: widgets-runner, key: secret}

@@ -15,9 +15,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/config"
-	"github.com/majorcontext/ward/internal/dispatch"
 	"github.com/majorcontext/ward/internal/dispatch/pull"
-	"github.com/majorcontext/ward/internal/dispatch/push"
 	"github.com/majorcontext/ward/internal/identity"
 	"github.com/majorcontext/ward/internal/identity/oidc"
 	"github.com/majorcontext/ward/internal/identity/usertoken"
@@ -73,7 +71,7 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "runner" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		code := runRunner(ctx, os.Getenv, nil, os.Stderr)
+		code := runRunner(ctx, os.Getenv, os.Stderr)
 		stop()
 		os.Exit(code)
 	}
@@ -125,16 +123,8 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	if opts.Clock != nil {
 		clock = opts.Clock
 	}
-	pushes, queue := push.New(cfg.Runners), pull.New(store, cfg.Runners, clock)
-	dispatch := map[string]dispatch.Dispatcher{}
-	hasPull := false
-	for _, r := range cfg.Runners {
-		dispatch[r.Repo] = pushes
-		if r.Pull() {
-			dispatch[r.Repo], hasPull = queue, true
-		}
-	}
-	checks := check.New(store, cfg.Runners, dispatch, clock, opts.Logger)
+	queue := pull.New(store, cfg.Runners, clock)
+	checks := check.New(store, cfg.Runners, queue.Wake, clock, opts.Logger)
 	lands := land.New(cfg.Land, store, checks, clock, opts.Logger)
 	if err := checks.Start(ctx); err != nil {
 		return err
@@ -151,7 +141,7 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 		}
 	}
 	deps.Human = identity.Chain(viaOIDC, usertoken.Authenticator{Store: store, Now: deps.Now})
-	if hasPull {
+	if len(cfg.Runners) > 0 {
 		deps.Pull = queue
 	}
 	var engine *mirror.Engine

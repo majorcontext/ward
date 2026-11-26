@@ -37,7 +37,7 @@ hookSecret:
   key: secret
 
 # trustedKeys is the list of caller public keys. Each entry has kid, key (standard base64 of an Ed25519 public key)
-# and scopes (read, operator, land, check). Set trustedKeysSecret to read the JSON list from an existing Secret instead.
+# and scopes (read, operator, land, check, runner). Set trustedKeysSecret to read the JSON list from an existing Secret instead.
 # Set at most one of the two.
 trustedKeys: []
 trustedKeysSecret:
@@ -49,8 +49,9 @@ trustedKeysSecret:
 #   githubApp: {appId: N, installationId: N, secret: NAME, key: KEY}   a PEM RSA private key of a GitHub App
 mirrors: []
 
-# runners lists the check runners, one for each repository. Each has repo, url, env and secret ({name, key}: an existing
-# Secret that holds the key that signs the check requests). env is the environment text of the runner, such as an image digest.
+# runners lists the check runners, one for each repository. Each has repo, kids (the runner identities that may lease its
+# checks), optional minIsolation (gvisor by default, or container) and env. env is the environment text of the runner, such as
+# an image digest.
 runners: []
 
 # githubApiUrl sets WARD_GITHUB_API_URL, for a GitHub Enterprise Server.
@@ -86,7 +87,7 @@ podAnnotations: {}
 extraEnv: []
 
 # runner deploys `ward runner`, a check runner that runs each check in a sandbox next to ward. It is off by default.
-# Ward reaches it at http://RELEASE-runner:PORT/v1/checks: put that URL in an entry of runners, with the same secret.
+# It polls ward for leases, so it needs no Service. Put its checkKey.kid in the kids of an entry of runners.
 runner:
   enabled: false
   # image must hold ward and a container engine, such as the image of images/ward-runner/Dockerfile.
@@ -94,13 +95,10 @@ runner:
     repository: ""
     tag: ""
     digest: ""
-  listenPort: 8081
   # wardUrl defaults to the Service of this release.
   wardUrl: ""
-  # hookSecret names the existing Secret that holds the key that signs the check requests. It is the secret of the runners entry.
-  hookSecret: {name: "", key: secret}
-  # checkKey names the existing Secret that holds the base64 Ed25519 private key that signs check tokens. Its public key
-  # goes in trustedKeys with the kid below and the scope check.
+  # checkKey names the existing Secret that holds the base64 Ed25519 private key that signs check and runner tokens. Its public key
+  # goes in trustedKeys with the kid below and the scopes check and runner.
   checkKey: {kid: "", name: "", key: key}
   # motte names the Secret that holds a read grant of motte for the repositories to check.
   motte: {url: "", grantSecret: {name: "", key: grant}}

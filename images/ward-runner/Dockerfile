@@ -19,5 +19,4 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends podman catatonit ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/ward /usr/local/bin/ward
-EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/ward", "runner"]

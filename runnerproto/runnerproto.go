@@ -1,5 +1,5 @@
-// Package runnerproto is the wire protocol between ward and a check runner: the check request that ward sends, its
-// signature, the result that a runner posts and the token that authorizes the post. ward, `ward runner` and a runner of
+// Package runnerproto is the wire protocol between ward and a check runner: the lease that carries a check request, the
+// result that a runner posts and the tokens that authorize both. ward, `ward runner` and a runner of
 // another author share this definition. runner.schema.json describes the JSON bodies.
 package runnerproto
 
@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,18 +21,11 @@ import (
 )
 
 const (
-	// SignatureHeader carries "sha256=" and the hex HMAC-SHA256 of the request body.
-	SignatureHeader = "Ward-Signature"
 	// ResultsPath is the route of ward that takes a result, with a check token as the bearer credential.
 	ResultsPath = "/v1/results"
 	MaxSummary  = 4096
 	MaxLogURL   = 2048
 )
-
-// Runner is a check runner as ward sees it: Handler serves the hook that ward posts check requests to.
-type Runner interface {
-	http.Handler
-}
 
 // Check is one required check. The runner runs Run at the root of the tree.
 type Check struct {
@@ -52,7 +44,7 @@ func (c Check) Hash() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Request is the body that ward posts to a runner. Commit is a commit of motte whose tree is Tree.
+// Request is the check request that a lease carries. Commit is a commit of motte whose tree is Tree.
 type Request struct {
 	RequestID string `json:"request_id"`
 	Repo      string `json:"repo"`
@@ -77,18 +69,6 @@ type Result struct {
 	Status    Status `json:"status"`
 	Summary   string `json:"summary"`
 	LogURL    string `json:"log_url"`
-}
-
-// Sign returns the value of SignatureHeader for body.
-func Sign(secret, body []byte) string {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
-}
-
-// Verify reports whether header is the signature of body under secret.
-func Verify(secret, body []byte, header string) bool {
-	return hmac.Equal([]byte(Sign(secret, body)), []byte(header))
 }
 
 // Decode reads a request body. It checks that check_hash is the hash of check.

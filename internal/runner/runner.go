@@ -1,4 +1,4 @@
-// Package runner is `ward runner`: a check runner that serves the hook of the runner protocol, fetches the exact tree,
+// Package runner is `ward runner`: a check runner that leases check requests from ward, fetches the exact tree,
 // runs the argv of the check in a sandbox and posts the result to ward.
 package runner
 
@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,7 +23,6 @@ import (
 )
 
 const (
-	maxBody     = 1 << 20
 	tokenLife   = 10 * time.Minute
 	postTries   = 8
 	postTimeout = 30 * time.Second
@@ -34,20 +32,18 @@ const (
 // Options are the parts of a Runner. Every field except Clock, Log, HTTP and WorkDir is required.
 type Options struct {
 	WardURL string
-	// Secret returns the key of the request signature. The runner calls it for each request, so a rotated key applies at once.
-	Secret func() ([]byte, error)
 	// Token returns a check token for repo.
 	Token func(repo string, exp time.Time) (string, error)
 	// Fetch writes the files of req.Tree into dir. It must not follow a link that the tree holds.
 	Fetch   func(ctx context.Context, req runnerproto.Request, dir string) error
 	Sandbox sandbox.Sandbox
-	// Concurrency is the most runs at one time. A request over the limit gets 503, and ward sends it again.
+	// Concurrency is the most leases that the runner holds at one time.
 	Concurrency int
 	WorkDir     string
 	// CacheDir is the root of the durable caches. Each repository and env gets a directory under it, so a check sees only
 	// the cache of its own repository. Empty means no cache.
 	CacheDir string
-	// Isolation is the sandbox level that Pull reports to ward, and RunnerToken returns a runner token. Only Pull uses them.
+	// Isolation is the sandbox level that Pull reports to ward, and RunnerToken returns a runner token.
 	Isolation   runnerproto.Isolation
 	RunnerToken func(exp time.Time) (string, error)
 	Clock       check.Clock
@@ -55,18 +51,13 @@ type Options struct {
 	HTTP        *http.Client
 }
 
-// Runner serves the hook. Start it before the first request.
+// Runner leases check requests and runs them.
 type Runner struct {
 	o    Options
 	slot chan struct{}
-
-	mu      sync.Mutex
-	running map[string]bool
-	ctx     context.Context
-	wg      sync.WaitGroup
+	ctx  context.Context
+	wg   sync.WaitGroup
 }
-
-var _ runnerproto.Runner = (*Runner)(nil)
 
 // New returns a runner. The runs stop when ctx ends.
 func New(ctx context.Context, o Options) *Runner {
@@ -82,67 +73,13 @@ func New(ctx context.Context, o Options) *Runner {
 	if o.Concurrency < 1 {
 		o.Concurrency = 1
 	}
-	return &Runner{o: o, slot: make(chan struct{}, o.Concurrency), running: map[string]bool{}, ctx: ctx}
+	return &Runner{o: o, slot: make(chan struct{}, o.Concurrency), ctx: ctx}
 }
 
 // Wait returns when every run has ended. Call it after the context of New ends.
 func (r *Runner) Wait() { r.wg.Wait() }
 
-func (r *Runner) ServeHTTP(w http.ResponseWriter, hr *http.Request) {
-	if hr.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, hr.Body, maxBody))
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	secret, err := r.o.Secret()
-	if err != nil {
-		r.o.Log.Error("secret unreadable", "error", err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	if !runnerproto.Verify(secret, body, hr.Header.Get(runnerproto.SignatureHeader)) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	req, err := runnerproto.Decode(body)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	r.mu.Lock()
-	if r.running[req.RequestID] {
-		r.mu.Unlock()
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	select {
-	case r.slot <- struct{}{}:
-	default:
-		r.mu.Unlock()
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
-	}
-	r.running[req.RequestID] = true
-	r.mu.Unlock()
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		defer func() {
-			r.mu.Lock()
-			delete(r.running, req.RequestID)
-			r.mu.Unlock()
-			<-r.slot
-		}()
-		r.execute(r.ctx, req)
-	}()
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// execute runs req and posts the result. It posts nothing when ctx ends first: ward sends or leases the request again.
+// execute runs req and posts the result. It posts nothing when ctx ends first: ward leases the request again.
 func (r *Runner) execute(ctx context.Context, req runnerproto.Request) {
 	res := runnerproto.Result{RequestID: req.RequestID}
 	start := r.o.Clock.Now()

@@ -1,7 +1,6 @@
 package pull_test
 
 import (
-	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -9,25 +8,10 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
-	"github.com/majorcontext/ward/internal/dispatch/dispatchtest"
 	"github.com/majorcontext/ward/internal/dispatch/pull"
 	"github.com/majorcontext/ward/internal/mirror/sqlite"
 	"github.com/majorcontext/ward/runnerproto"
 )
-
-func TestConformance(t *testing.T) {
-	dispatchtest.Run(t, dispatchtest.Impl{New: func(_ *testing.T, store check.Store, repos []string) dispatchtest.Harness {
-		var runners []check.Runner
-		for _, repo := range repos {
-			runners = append(runners, check.Runner{Repo: repo, Mode: check.ModePull, Kids: []string{repo + "-runner"}, MinIsolation: string(runnerproto.IsolationGVisor), Env: "env1"})
-		}
-		q := pull.New(store, runners, nil)
-		return dispatchtest.Harness{Dispatcher: q, Receive: func(ctx context.Context, repo string) (runnerproto.Request, bool) {
-			l, ok, err := q.Lease(ctx, repo+"-runner", runnerproto.IsolationGVisor, time.Hour)
-			return l.Request, ok && err == nil
-		}}
-	}})
-}
 
 func newQueue(t *testing.T) (*pull.Queue, check.Store) {
 	t.Helper()
@@ -37,8 +21,8 @@ func newQueue(t *testing.T) (*pull.Queue, check.Store) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	runners := []check.Runner{
-		{Repo: "r", Mode: check.ModePull, Kids: []string{"strong", "weak"}, MinIsolation: string(runnerproto.IsolationGVisor)},
-		{Repo: "lax", Mode: check.ModePull, Kids: []string{"weak"}, MinIsolation: string(runnerproto.IsolationContainer)},
+		{Repo: "r", Kids: []string{"strong", "weak"}, MinIsolation: string(runnerproto.IsolationGVisor)},
+		{Repo: "lax", Kids: []string{"weak"}, MinIsolation: string(runnerproto.IsolationContainer)},
 	}
 	return pull.New(store, runners, nil), store
 }

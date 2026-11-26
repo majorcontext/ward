@@ -120,10 +120,6 @@ func (s *Store) OpenRequests(ctx context.Context) ([]check.Request, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) SetAccepted(ctx context.Context, id string, at time.Time) error {
-	return s.exec(ctx, `UPDATE check_requests SET accepted_at = ? WHERE id = ?`, micro(at), id)
-}
-
 func (s *Store) Supersede(ctx context.Context, old string, next check.Request, now time.Time) (bool, error) {
 	done := false
 	err := s.tx(ctx, func(tx *sql.Tx) error {

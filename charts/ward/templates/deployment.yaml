@@ -131,11 +131,6 @@ spec:
               mountPath: /var/run/ward/mirrors/{{ .name }}
               readOnly: true
             {{- end }}
-            {{- range $i, $r := .Values.runners }}
-            - name: runner-{{ $i }}
-              mountPath: /var/run/ward/runners/{{ $i }}
-              readOnly: true
-            {{- end }}
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -162,14 +157,6 @@ spec:
             items:
               - key: {{ required (printf "mirror %s: the credential needs key" .name) $src.key }}
                 path: credential
-        {{- end }}
-        {{- range $i, $r := .Values.runners }}
-        - name: runner-{{ $i }}
-          secret:
-            secretName: {{ required (printf "runner %s: secret.name is required" $r.repo) $r.secret.name }}
-            items:
-              - key: {{ required (printf "runner %s: secret.key is required" $r.repo) $r.secret.key }}
-                path: secret
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

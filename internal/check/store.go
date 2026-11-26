@@ -53,7 +53,6 @@ type Store interface {
 	OpenRequest(ctx context.Context, r Request) (Request, bool, error)
 	Request(ctx context.Context, id string) (Request, bool, error)
 	OpenRequests(ctx context.Context) ([]Request, error)
-	SetAccepted(ctx context.Context, id string, at time.Time) error
 	// Supersede closes the request old and stores next, an open request for the same key. It does nothing and returns false
 	// when old is no longer open or the key has a pass. It does nothing and returns a *LeasedError when a runner holds a
 	// lease on old that is live at now.

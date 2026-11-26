@@ -469,11 +469,11 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 	}
 	runners := ""
 	if o.runner != nil {
-		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, URL: o.runner.srv.URL, SecretFile: h.writeFile("runner.secret", runnerSecret+"\n"), Env: runnerEnv}})
+		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, Kids: []string{runnerKid}, Env: runnerEnv}})
 		runners = string(raw)
 	}
 	if o.pullKids != nil {
-		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, Mode: check.ModePull, Kids: o.pullKids, MinIsolation: o.pullMin, Env: runnerEnv}})
+		raw, _ := json.Marshal([]check.Runner{{Repo: h.repo, Kids: o.pullKids, MinIsolation: o.pullMin, Env: runnerEnv}})
 		runners = string(raw)
 	}
 	motteURL := h.motte.URL
@@ -524,6 +524,9 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		})
 	}
 	h.t.Cleanup(p.stop)
+	if o.runner != nil {
+		o.runner.attach(h, p.URL)
+	}
 	if o.noWait || o.noMirror {
 		return p
 	}

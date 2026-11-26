@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/majorcontext/ward/internal/dispatch"
 	"github.com/majorcontext/ward/runnerproto"
 )
 
@@ -48,11 +47,11 @@ type Posted = runnerproto.Result
 
 // Manager keeps the results and sends the check requests. It has no poll: a result wakes the waiters.
 type Manager struct {
-	store    Store
-	runners  map[string]Runner
-	dispatch map[string]dispatch.Dispatcher
-	clock    Clock
-	log      *slog.Logger
+	store   Store
+	runners map[string]Runner
+	wake    func()
+	clock   Clock
+	log     *slog.Logger
 
 	mu      sync.Mutex
 	changed chan struct{}
@@ -60,15 +59,15 @@ type Manager struct {
 	wg      sync.WaitGroup
 }
 
-// New returns a manager. dispatch holds the dispatcher of each repository of runners. A nil clock means the wall clock.
-func New(store Store, runners []Runner, dispatch map[string]dispatch.Dispatcher, clock Clock, log *slog.Logger) *Manager {
+// New returns a manager. wake tells the polling runners that a request is open; it may be nil. A nil clock means the wall clock.
+func New(store Store, runners []Runner, wake func(), clock Clock, log *slog.Logger) *Manager {
 	if clock == nil {
 		clock = RealClock()
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	m := &Manager{store: store, runners: map[string]Runner{}, dispatch: dispatch, clock: clock, log: log, changed: make(chan struct{})}
+	m := &Manager{store: store, runners: map[string]Runner{}, wake: wake, clock: clock, log: log, changed: make(chan struct{})}
 	for _, r := range runners {
 		m.runners[r.Repo] = r
 	}
@@ -184,15 +183,13 @@ func (m *Manager) Post(ctx context.Context, repo, kid string, p Posted) error {
 	case req.Repo != repo:
 		return ErrOtherRepo
 	}
-	if r := m.runners[repo]; r.Pull() {
-		if !slices.Contains(r.Kids, kid) {
-			return ErrNotRegistered
-		}
-		if leased, err := m.store.Leased(ctx, req.ID, kid); err != nil {
-			return err
-		} else if !leased {
-			return ErrNotRegistered
-		}
+	if !slices.Contains(m.runners[repo].Kids, kid) {
+		return ErrNotRegistered
+	}
+	if leased, err := m.store.Leased(ctx, req.ID, kid); err != nil {
+		return err
+	} else if !leased {
+		return ErrNotRegistered
 	}
 	added, err := m.store.AddResult(ctx, Result{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Hash: req.Hash, Env: req.Env, Status: p.Status, Summary: p.Summary, LogURL: p.LogURL})
 	if err != nil {
@@ -209,47 +206,18 @@ func (m *Manager) spawn(r Request) {
 	go m.deliver(m.ctx, r)
 }
 
-// deliver sends the request until a runner accepts it, waits for its result, and sends a new request when the result is late.
+// deliver wakes the polling runners, waits for the result, and opens a new request when the result is late.
 func (m *Manager) deliver(ctx context.Context, req Request) {
 	defer m.wg.Done()
 	for {
-		if req.AcceptedAt.IsZero() && !m.send(ctx, &req) {
-			return
+		if m.wake != nil {
+			m.wake()
 		}
 		next, ok := m.awaitResult(ctx, req)
 		if !ok {
 			return
 		}
 		req = next
-	}
-}
-
-// send posts req with the backoff until a runner accepts it. It returns false when the request ended or ctx ended.
-func (m *Manager) send(ctx context.Context, req *Request) bool {
-	for attempt := 1; ; attempt++ {
-		cur, ok, err := m.store.Request(ctx, req.ID)
-		if err == nil && ok && !cur.Open {
-			return false
-		}
-		if err = m.post(ctx, *req); err == nil {
-			if m.runners[req.Repo].Pull() {
-				return true
-			}
-			now := m.clock.Now()
-			if err = m.store.SetAccepted(ctx, req.ID, now); err == nil {
-				req.AcceptedAt = now
-				return true
-			}
-		}
-		if ctx.Err() != nil {
-			return false
-		}
-		m.log.Warn("check request not accepted", "request_id", req.ID, "attempt", attempt)
-		select {
-		case <-m.clock.After(backoff(attempt)):
-		case <-ctx.Done():
-			return false
-		}
 	}
 }
 
@@ -316,14 +284,6 @@ func (m *Manager) resend(ctx context.Context, old Request) (Request, bool, error
 	next.ID, next.AcceptedAt, next.Open = id, time.Time{}, true
 	ok, err := m.store.Supersede(ctx, old.ID, next, m.clock.Now())
 	return next, ok, err
-}
-
-func (m *Manager) post(ctx context.Context, req Request) error {
-	d, ok := m.dispatch[req.Repo]
-	if !ok {
-		return ErrNoRunner
-	}
-	return d.Dispatch(ctx, runnerproto.Request{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env})
 }
 
 func newID() (string, error) {

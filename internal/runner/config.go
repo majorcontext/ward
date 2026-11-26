@@ -22,11 +22,8 @@ import (
 
 // Config is the configuration of `ward runner`, read from the environment.
 type Config struct {
-	Listen      string
 	Options     Options
 	SandboxKind string
-	// Pull is true when the runner polls ward for leases and serves no hook.
-	Pull bool
 	// Checkouts is the setting of the warm checkouts, or nil when WARD_RUNNER_CHECKOUT_DIR is unset.
 	Checkouts *CheckoutConfig
 }
@@ -34,21 +31,11 @@ type Config struct {
 // Load reads the configuration from getenv and builds the runner options. SandboxKind is gvisor, container or auto.
 // With auto the runner uses gVisor when runsc is on the path and a plain container otherwise.
 func Load(getenv func(string) string) (Config, error) {
-	c := Config{Listen: ":8081"}
-	if v := getenv("WARD_RUNNER_LISTEN"); v != "" {
-		c.Listen = v
-	}
-	switch getenv("WARD_RUNNER_MODE") {
-	case "", "push":
-	case "pull":
-		c.Pull = true
-	default:
-		return c, errors.New("WARD_RUNNER_MODE must be push or pull")
+	c := Config{}
+	if m := getenv("WARD_RUNNER_MODE"); m != "" && m != "pull" {
+		return c, errors.New("WARD_RUNNER_MODE must be pull or absent")
 	}
 	required := []string{"WARD_RUNNER_WARD_URL", "WARD_RUNNER_KID", "WARD_RUNNER_KEY_FILE", "WARD_RUNNER_MOTTE_URL", "WARD_RUNNER_MOTTE_GRANT_FILE", "WARD_RUNNER_IMAGE"}
-	if !c.Pull {
-		required = append(required, "WARD_RUNNER_SECRET_FILE")
-	}
 	for _, name := range required {
 		if getenv(name) == "" {
 			return c, fmt.Errorf("%s is required", name)
@@ -63,12 +50,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("WARD_RUNNER_KEY_FILE: %w", err)
 	}
-	secretFile, grantFile, kid := getenv("WARD_RUNNER_SECRET_FILE"), getenv("WARD_RUNNER_MOTTE_GRANT_FILE"), getenv("WARD_RUNNER_KID")
-	if !c.Pull {
-		if _, err := readText(secretFile); err != nil {
-			return c, fmt.Errorf("WARD_RUNNER_SECRET_FILE: %w", err)
-		}
-	}
+	grantFile, kid := getenv("WARD_RUNNER_MOTTE_GRANT_FILE"), getenv("WARD_RUNNER_KID")
 	if _, err := readText(grantFile); err != nil {
 		return c, fmt.Errorf("WARD_RUNNER_MOTTE_GRANT_FILE: %w", err)
 	}
@@ -100,10 +82,6 @@ func Load(getenv func(string) string) (Config, error) {
 	fetch := MotteFetcher{URL: getenv("WARD_RUNNER_MOTTE_URL"), Grant: func(context.Context) (string, error) { return readText(grantFile) }}
 	c.Options = Options{
 		WardURL: getenv("WARD_RUNNER_WARD_URL"),
-		Secret: func() ([]byte, error) {
-			s, err := readText(secretFile)
-			return []byte(s), err
-		},
 		Token: func(repo string, exp time.Time) (string, error) {
 			return runnerproto.MintCheckToken(kid, ed25519.PrivateKey(key), repo, "ward-runner", exp)
 		},

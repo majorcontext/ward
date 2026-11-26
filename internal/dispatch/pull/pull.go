@@ -1,4 +1,4 @@
-// Package pull dispatches a check request through a queue that runners poll. A runner dials out to ward, holds a lease on a
+// Package pull is the queue that runners poll. A runner dials out to ward, holds a lease on a
 // request while it runs it, and renews the lease. A lease that is not renewed ends, and the same request is leasable again.
 package pull
 
@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
-	"github.com/majorcontext/ward/internal/dispatch"
 	"github.com/majorcontext/ward/runnerproto"
 )
 
@@ -42,8 +41,6 @@ type Queue struct {
 	wake chan struct{}
 }
 
-var _ dispatch.Dispatcher = (*Queue)(nil)
-
 // New returns a queue for the pull runners in runners. A nil clock means the wall clock.
 func New(store check.Store, runners []check.Runner, clock check.Clock) *Queue {
 	if clock == nil {
@@ -51,23 +48,17 @@ func New(store check.Store, runners []check.Runner, clock check.Clock) *Queue {
 	}
 	q := &Queue{store: store, clock: clock, runners: map[string]check.Runner{}, wake: make(chan struct{})}
 	for _, r := range runners {
-		if r.Pull() {
-			q.runners[r.Repo] = r
-		}
+		q.runners[r.Repo] = r
 	}
 	return q
 }
 
-// Dispatch queues req. The store holds the request already, so the queue only wakes the polls.
-func (q *Queue) Dispatch(_ context.Context, req runnerproto.Request) error {
-	if _, ok := q.runners[req.Repo]; !ok {
-		return dispatch.ErrNoRunner
-	}
+// Wake tells the waiting polls that a request is open. The store holds the request already.
+func (q *Queue) Wake() {
 	q.mu.Lock()
 	close(q.wake)
 	q.wake = make(chan struct{})
 	q.mu.Unlock()
-	return nil
 }
 
 func (q *Queue) woken() <-chan struct{} {

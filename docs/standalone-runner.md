@@ -2,19 +2,11 @@
 
 `ward runner` receives check requests from ward, fetches the exact tree from motte, runs each check in a sandbox and posts the result. The contract is in `docs/architecture.md`, Standalone runner.
 
-## Push or pull
+## How a runner gets work
 
-| | Push | Pull |
-|---|---|---|
-| Who connects | ward posts each check request to the hook URL of the runner. | The runner polls ward (`POST /v1/runner/leases`), so ward never connects to it. |
-| Network | ward must reach the runner. | Outbound HTTPS from the runner to ward and to motte. Nothing inbound. |
-| `WARD_RUNNERS` entry | `repo`, `url`, `secret_file`, `env`. | `repo`, `mode: "pull"`, `kids`, optional `min_isolation`, `env`. |
-| Runner | `WARD_RUNNER_MODE=push` (default). | `WARD_RUNNER_MODE=pull`. |
-| Lost runner | ward sends the request again after the late deadline. | The lease ends when the runner stops renewing it. The same request is leased again. |
+The runner polls ward (`POST /v1/runner/leases`), so ward never connects to it. It needs outbound HTTPS to ward and to motte, and nothing inbound. The lease ends when the runner stops renewing it, and ward then leases the same request again. Behind a tunnel, expose `POST /v1/runner/leases`, `POST /v1/runner/leases/{lease_id}/renew` and `POST /v1/results`. A poll lasts up to 20 seconds.
 
-Pull behind a tunnel: expose `POST /v1/runner/leases`, `POST /v1/runner/leases/{lease_id}/renew` and `POST /v1/results`. A poll lasts up to 20 seconds.
-
-A pull entry: `{"repo":"native:widgets","mode":"pull","kids":["metal-1","metal-2"],"env":"IMAGE-DIGEST"}`. The default `min_isolation` is `gvisor`.
+A `WARD_RUNNERS` entry: `{"repo":"native:widgets","kids":["metal-1","metal-2"],"env":"IMAGE-DIGEST"}`. The default `min_isolation` is `gvisor`.
 
 ## Identity and isolation
 
@@ -24,8 +16,7 @@ The runner reports its sandbox in each poll. ward refuses a runner whose sandbox
 
 ## What you need
 
-- ward, and a `WARD_RUNNERS` entry for each repository: `{"repo":"native:widgets","url":"http://runner.internal:8081/v1/checks","secret_file":"/etc/ward/runner-hook-secret","env":"IMAGE-DIGEST"}`. Use the digest of the check image as `env`, so a new image proves each check again.
-- The same secret in the file of `WARD_RUNNER_SECRET_FILE` on the runner.
+- ward, and a `WARD_RUNNERS` entry for each repository, as above. Use the digest of the check image as `env`, so a new image proves each check again.
 - A key pair for check tokens. Put the public key in `WARD_TRUSTED_KEYS` of ward with a `kid` and the scope `check`. Give the private key (base64) to the runner with `WARD_RUNNER_KID` and `WARD_RUNNER_KEY_FILE`.
 - A `read` grant of motte for the repositories, in the file of `WARD_RUNNER_MOTTE_GRANT_FILE`. Replace the file before the grant expires: the runner reads it for each fetch.
 - A container engine (`docker` or `podman`), and an OCI image in which the checks run. The image holds the tools that the checks call. The default network is `none`, so the image must hold what a check needs, or you set `WARD_RUNNER_NETWORK`.
@@ -55,11 +46,11 @@ The command checks the host, writes `/etc/systemd/system/ward-runner.service` an
 
 With `WARD_RUNNER_CACHE_DIR` the runner keeps one directory for each repository and env across runs. The check sees it at `/cache`, read-write, and `GOCACHE`, `GOMODCACHE` and `XDG_CACHE_HOME` point into it. The sandbox of a repository mounts only its own directory, so one repository cannot read or change the cache of another.
 
-## A Linux machine by hand (push)
+## A Linux machine by hand
 
 1. Install the engine, and `runsc` if you want gVisor. Install the `ward` binary.
 2. Create the user `ward-runner` that may use the engine.
-3. Write the three secret files with mode 0600, owned by that user.
+3. Write the two secret files with mode 0600, owned by that user.
 4. Write `/etc/systemd/system/ward-runner.service`:
 
 ```ini
@@ -69,9 +60,7 @@ After=network-online.target
 
 [Service]
 User=ward-runner
-Environment=WARD_RUNNER_LISTEN=:8081
 Environment=WARD_RUNNER_WARD_URL=https://ward.example.org
-Environment=WARD_RUNNER_SECRET_FILE=/etc/ward-runner/hook-secret
 Environment=WARD_RUNNER_KID=runner-1
 Environment=WARD_RUNNER_KEY_FILE=/etc/ward-runner/check-key
 Environment=WARD_RUNNER_MOTTE_URL=https://motte.example.org
@@ -89,14 +78,14 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-5. Run `systemctl enable --now ward-runner`. `GET /health` answers 200. Put the listener behind TLS when ward reaches it over a network that you do not control. The signature authenticates ward to the runner, and the check token authenticates the runner to ward.
+5. Run `systemctl enable --now ward-runner`.
 
 ## Kubernetes
 
-Set `runner.enabled=true` in the chart `charts/ward`, and fill `runner.image`, `runner.hookSecret`, `runner.checkKey`, `runner.motte` and `runner.sandboxImage` (see `charts/ward/ci/runner.yaml`). The chart creates a Deployment and a Service `RELEASE-runner`. Build the runner image from `images/ward-runner/Dockerfile`: it holds `ward` and podman.
+Set `runner.enabled=true` in the chart `charts/ward`, and fill `runner.image`, `runner.checkKey`, `runner.motte` and `runner.sandboxImage` (see `charts/ward/ci/runner.yaml`). The chart creates a Deployment `RELEASE-runner` and no Service, because the runner polls ward. Put `runner.checkKey.kid` in the `kids` of an entry of `runners`. Build the runner image from `images/ward-runner/Dockerfile`: it holds `ward` and podman.
 
 A container engine in a pod needs rights. Either set `runner.privileged=true`, or give the pod an engine through `runner.extraVolumes`, `runner.extraVolumeMounts` and `runner.extraEnv`. A node engine socket resolves the tree directory on the node, so a path of the pod must also exist on the node. Isolate the runner pod: it holds a motte read grant, and the checks of a repository are code that its authors wrote.
 
 ## Writing another runner
 
-Read `runnerproto/runner.schema.json`. A Go runner imports `runnerproto`. A runner in another language must produce the same bytes for the signature. Run `runnerproto/runnertest.Run` against your handler to prove the contract.
+Read `runnerproto/runner.schema.json`. A Go runner imports `runnerproto`. A runner in another language polls and renews leases and posts results as the schema says.

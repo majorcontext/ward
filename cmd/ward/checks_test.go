@@ -84,8 +84,8 @@ func TestLandReusesAPassForALaterLandOfTheSameTree(t *testing.T) {
 	h.awaitLand(p, first.ID, "landed")
 
 	second := h.awaitLand(p, h.postLand(p, "other", "feature/b", nil).ID, "landed")
-	if second.Checks[0].State != "pass" || len(run.reqs) != 0 {
-		t.Fatalf("second land = %+v, %d new requests", second, len(run.reqs))
+	if second.Checks[0].State != "pass" || len(run.extra()) != 0 {
+		t.Fatalf("second land = %+v, %d new requests", second, len(run.extra()))
 	}
 }
 
@@ -151,8 +151,8 @@ func TestLandSendsOneRequestForOneTreeWhenTwoLandsWait(t *testing.T) {
 	p.answer(run.next(), "pass", "ok")
 	h.awaitLand(p, a.ID, "landed")
 	h.awaitLand(p, b.ID, "landed")
-	if len(run.reqs) != 0 {
-		t.Fatalf("%d extra requests for one key", len(run.reqs))
+	if len(run.extra()) != 0 {
+		t.Fatalf("%d extra requests for one key", len(run.extra()))
 	}
 }
 
@@ -171,7 +171,7 @@ func TestLandJudgesABranchByTheCheckFileOfTheTip(t *testing.T) {
 	h.awaitLand(p, weaken.ID, "landed")
 
 	later := h.awaitLand(p, h.postLand(p, "main", "feature/later", nil).ID, "landed")
-	if len(later.Checks) != 0 || len(run.reqs) != 0 {
+	if len(later.Checks) != 0 || len(run.extra()) != 0 {
 		t.Fatalf("a change to the check file did not apply to the next land: %+v", later)
 	}
 }
@@ -220,8 +220,8 @@ func TestLandResumesAfterARestartWithoutAskingAgain(t *testing.T) {
 	if h.treeOf(h.mainTip()) != req.Tree || done.Tree != req.Tree {
 		t.Fatalf("land = %+v", done)
 	}
-	for len(run.reqs) > 0 {
-		if again := <-run.reqs; again.RequestID != req.RequestID {
+	for _, again := range run.extra() {
+		if again.RequestID != req.RequestID {
 			t.Fatalf("land = %+v, a new request %s", done, again.RequestID)
 		}
 	}
@@ -268,33 +268,24 @@ func TestResultRoutePostsOnlyForTheTokenRepositoryAndKeepsTheFirstResult(t *test
 	}
 }
 
-func TestRunnerRequestIsRetriedWithABackoffAndSentAgainWhenLate(t *testing.T) {
+func TestRequestIsLeasableAgainWhenItsLeaseEnds(t *testing.T) {
 	h, run := newLandHarness(t), newRunner(t)
 	clk, waitTimer := newTickClock(t)
 	p := h.startWard(wardOpts{noMirror: true, runner: run, clock: clk})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
-	run.status.Store(http.StatusServiceUnavailable)
 	l := h.postLand(p, "main", "feature/x", nil)
 	first := run.next()
-	for _, wait := range []time.Duration{time.Second, 2 * time.Second} {
-		waitTimer(wait)
-		clk.advance(wait)
-		if again := run.next(); again.RequestID != first.RequestID {
-			t.Fatalf("a retry used the request id %s, want %s", again.RequestID, first.RequestID)
-		}
+	if again := run.extra(); len(again) != 0 {
+		t.Fatalf("a request with a live lease was leased again: %+v", again)
 	}
-	run.status.Store(http.StatusOK)
-	waitTimer(4 * time.Second)
-	clk.advance(4 * time.Second)
-	run.next()
 
 	late := 60*time.Second + 10*time.Minute
 	waitTimer(late)
 	clk.advance(late)
 	second := run.next()
-	if second.RequestID == first.RequestID || second.Tree != first.Tree {
-		t.Fatalf("late request = %+v, first = %+v", second, first)
+	if second.Tree != first.Tree {
+		t.Fatalf("the request after the lease ended = %+v, first = %+v", second, first)
 	}
 	p.answer(second, "pass", "ok")
 	h.awaitLand(p, l.ID, "landed")
@@ -355,9 +346,9 @@ func TestLandReadEndsAtOnceForAnOldStateAtAChangeOrWhenTheWaitEnds(t *testing.T)
 		return out
 	}
 
-	ended := read("5")
-	waitTimer(5 * time.Second)
-	clk.advance(5 * time.Second)
+	ended := read("7")
+	waitTimer(7 * time.Second)
+	clk.advance(7 * time.Second)
 	if got := <-ended; got.State != "checking" {
 		t.Fatalf("a wait that ended with no change answered %+v", got)
 	}
@@ -365,8 +356,8 @@ func TestLandReadEndsAtOnceForAnOldStateAtAChangeOrWhenTheWaitEnds(t *testing.T)
 	if _, got := p.landGet(h.landToken(h.repo), l.ID, "?wait=30&state=queued"); got.State != "checking" {
 		t.Fatalf("a wait that named an old state answered %+v", got)
 	}
-	changed := read("30&state=checking")
-	waitTimer(30 * time.Second)
+	changed := read("31&state=checking")
+	waitTimer(31 * time.Second)
 	p.answer(req, "pass", "ok")
 	if got := <-changed; got.State != "landing" && got.State != "landed" {
 		t.Fatalf("a wait answered %+v after the state changed", got)
@@ -394,8 +385,8 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 
 	p = h.startWard(wardOpts{noMirror: true, runner: run})
 	failed := h.awaitLand(p, l.ID, "failed")
-	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" || len(run.reqs) != 0 {
-		t.Fatalf("land = %+v, %d new requests: a fail from before the restart must end the land", failed, len(run.reqs))
+	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" || len(run.extra()) != 0 {
+		t.Fatalf("land = %+v, %d new requests: a fail from before the restart must end the land", failed, len(run.extra()))
 	}
 }
 
@@ -496,9 +487,9 @@ func TestLandsQueuedBehindACheckLandTogetherOnOneCheckRun(t *testing.T) {
 	if len(slices.Compact(slices.Clone(sent))) != 1 || len(sent) != 9 {
 		t.Fatalf("batch land calls = %q: every repeat must carry the same id and values", sent)
 	}
-	if len(run.reqs) != 0 || h.treeOf(h.mainTip()) != batch.Tree || c.Tip != h.mainTip() || b.Tip == c.Tip || b.Generation != c.Generation ||
+	if len(run.extra()) != 0 || h.treeOf(h.mainTip()) != batch.Tree || c.Tip != h.mainTip() || b.Tip == c.Tip || b.Generation != c.Generation ||
 		h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" {
-		t.Fatalf("b = %+v, c = %+v, %d extra requests, main tree %s, checked tree %s", b, c, len(run.reqs), h.treeOf(h.mainTip()), batch.Tree)
+		t.Fatalf("b = %+v, c = %+v, %d extra requests, main tree %s, checked tree %s", b, c, len(run.extra()), h.treeOf(h.mainTip()), batch.Tree)
 	}
 }
 
@@ -523,7 +514,7 @@ func TestLandFailsOnlyTheChangeThatBreaksTheBatchAndLandsTheRest(t *testing.T) {
 	h.git("fetch", "-q", "origin", "main")
 	if c.Error.Code != "check_failed" || c.Error.Details["summary"] != "c breaks it" || c.Checks[0].State != "fail" || b.Checks[0].State != "pass" ||
 		h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:d.txt") != "d" || d.Tip != h.mainTip() ||
-		gitErr(h.work, "cat-file", "-e", "FETCH_HEAD:c.txt") == nil || len(run.reqs) != 0 {
+		gitErr(h.work, "cat-file", "-e", "FETCH_HEAD:c.txt") == nil || len(run.extra()) != 0 {
 		t.Fatalf("b = %+v, c = %+v, d = %+v", b, c, d)
 	}
 }
@@ -541,7 +532,7 @@ func TestLandFailsAFirstLandThatConflictsAndStillLandsTheRestOfTheBatch(t *testi
 	h.awaitLand(p, queued[1].ID, "landed")
 	h.awaitLand(p, queued[2].ID, "landed")
 	h.git("fetch", "-q", "origin", "main")
-	if conflict.Error.Code != "land_conflict" || h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" || len(run.reqs) != 0 {
+	if conflict.Error.Code != "land_conflict" || h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" || len(run.extra()) != 0 {
 		t.Fatalf("conflicting land = %+v", conflict)
 	}
 }

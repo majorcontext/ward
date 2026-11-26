@@ -3,9 +3,6 @@ package check_test
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -13,9 +10,6 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
-	"github.com/majorcontext/ward/internal/dispatch"
-	"github.com/majorcontext/ward/internal/dispatch/pull"
-	"github.com/majorcontext/ward/internal/dispatch/push"
 	"github.com/majorcontext/ward/internal/mirror/sqlite"
 )
 
@@ -93,48 +87,44 @@ func (f *readFailer) Request(ctx context.Context, id string) (check.Request, boo
 
 func TestLateRequestIsSentAgainAfterAStoreReadFails(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	st, err := sqlite.Open(t.Context(), filepath.Join(dir, "state.db"))
+	st, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
 	store := &readFailer{Store: st}
-	got := make(chan struct{}, 8)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { got <- struct{}{} }))
-	defer srv.Close()
-	secret := filepath.Join(dir, "secret")
-	if err := os.WriteFile(secret, []byte("a-secret-value"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	clk := &stepClock{now: time.Unix(1_000_000, 0), added: make(chan struct{}, 64)}
-	runners := []check.Runner{{Repo: "r", URL: srv.URL, SecretFile: secret, Env: "e"}}
-	m := check.New(store, runners, map[string]dispatch.Dispatcher{"r": push.New(runners)}, clk, nil)
+	runners := []check.Runner{{Repo: "r", Kids: []string{"k"}, Env: "e"}}
+	m := check.New(store, runners, nil, clk, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	if err := m.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { cancel(); m.Wait() }()
-	recv := func(what string) {
-		t.Helper()
-		select {
-		case <-got:
-		case <-time.After(20 * time.Second): //lint:allow wallclock a wait on a goroutine that no bubble holds
-			t.Fatalf("the runner got no %s", what)
-		}
-	}
-
 	if err := m.Ensure(ctx, "r", "tree", "commit", check.Check{Name: "unit", Run: []string{"x"}, TimeoutSeconds: 60}); err != nil {
 		t.Fatal(err)
 	}
-	recv("first request")
 	late := 60*time.Second + 10*time.Minute
 	clk.waitTimer(t, late)
+	first, ok, err := st.Lease(ctx, []string{"r"}, "k", "l1", clk.Now(), clk.Now().Add(time.Second))
+	if err != nil || !ok {
+		t.Fatalf("lease = %v %v", ok, err)
+	}
 	store.fail.Store(1)
 	clk.advance(late)
 	clk.waitTimer(t, time.Second)
 	clk.advance(time.Second)
-	recv("request after the read failed")
+	for {
+		reqs, _ := st.OpenRequests(ctx)
+		if len(reqs) == 1 && reqs[0].ID != first.ID {
+			return
+		}
+		select {
+		case <-clk.added:
+		case <-time.After(20 * time.Second): //lint:allow wallclock a wait on a goroutine that no bubble holds
+			t.Fatal("the late request was not replaced after the read failed")
+		}
+	}
 }
 
 func TestPullRequestIsNotReplacedWhileQueuedOrLeased(t *testing.T) {
@@ -145,8 +135,8 @@ func TestPullRequestIsNotReplacedWhileQueuedOrLeased(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	clk := &stepClock{now: time.Unix(1_000_000, 0), added: make(chan struct{}, 64)}
-	runners := []check.Runner{{Repo: "r", Mode: check.ModePull, Kids: []string{"k"}, Env: "e"}}
-	m := check.New(st, runners, map[string]dispatch.Dispatcher{"r": pull.New(st, runners, clk)}, clk, nil)
+	runners := []check.Runner{{Repo: "r", Kids: []string{"k"}, Env: "e"}}
+	m := check.New(st, runners, nil, clk, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	_ = m.Start(ctx)
 	defer func() { cancel(); m.Wait() }()
