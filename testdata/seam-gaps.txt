@@ -3,4 +3,3 @@
 check-store # one implementation (sqlite) and no conformance suite
 land-store # one implementation (sqlite) and no conformance suite
 mirror-store # one implementation (sqlite) and no conformance suite
-mirror-remote-credential # no interface: the GitHub App exchange is a concrete type in internal/mirror

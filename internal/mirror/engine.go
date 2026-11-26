@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/majorcontext/ward/internal/gitcred"
 	"github.com/majorcontext/ward/internal/gitremote"
 	"github.com/majorcontext/ward/internal/gitremote/gitbin"
 	"log/slog"
@@ -67,7 +68,7 @@ type Engine struct {
 	done    func(kind, mirror string)
 	m       *metrics
 	entries map[string]Entry
-	apps    map[string]*appSource
+	creds   map[string]gitcred.Credential
 	repos   repoLocks
 
 	mu      sync.Mutex
@@ -117,7 +118,7 @@ func New(cfg Config, store Store, opts Options) *Engine {
 		git:     &gitRunner{git},
 		m:       newMetrics(store, opts.Clock),
 		entries: map[string]Entry{},
-		apps:    map[string]*appSource{},
+		creds:   map[string]gitcred.Credential{},
 		repos:   repoLocks{m: map[string]*sync.Mutex{}},
 		ctrl:    make(chan struct{}, 1),
 		workers: map[string]*worker{},
@@ -127,9 +128,7 @@ func New(cfg Config, store Store, opts Options) *Engine {
 	}
 	for _, en := range cfg.Mirrors {
 		e.entries[en.Name] = en
-		if en.GitHubApp != nil {
-			e.apps[en.Name] = newAppSource(*en.GitHubApp, cfg.GitHubAPI, opts.Clock)
-		}
+		e.creds[en.Name] = credentialOf(en, cfg.GitHubAPI, cfg.DataDir, opts.Clock)
 	}
 	return e
 }

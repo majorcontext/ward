@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/majorcontext/ward/internal/gitcred/forgeapp"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func ParseEntries(raw []byte) ([]Entry, error) {
 				return nil, fmt.Errorf("mirror %q: github_app.key_file: %w", e.Name, err)
 			}
 			e.GitHubApp.KeyFile = abs
-			e.Username = appUsername
+			e.Username = forgeapp.Username
 			continue
 		}
 		abs, err := filepath.Abs(e.CredentialFile)
@@ -112,7 +113,7 @@ func (e Entry) validateApp() error {
 	case a.AppID <= 0 || a.InstallationID <= 0:
 		return errors.New("github_app needs app_id and installation_id")
 	}
-	if _, err := readAppKey(a.KeyFile); err != nil {
+	if _, err := forgeapp.ReadKey(a.KeyFile); err != nil {
 		return fmt.Errorf("github_app.key_file: %w", err)
 	}
 	return nil

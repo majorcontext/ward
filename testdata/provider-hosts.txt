@@ -1,6 +1,6 @@
 # Files that name a provider host: ghcr.io, github.com, api.github.com, googleapis.com, amazonaws.com, r2.cloudflarestorage.com.
 # One path or glob per line with a reason. internal/seams fails an entry that matches no file with a host.
-internal/mirror/githubapp.go # default API base URL of the GitHub App credential
+internal/gitcred/forgeapp/forgeapp.go # default API base URL of the GitHub App credential
 charts/ward/Chart.yaml # home and source URL of this project
 charts/ward/values.yaml # default image repository of the published image
 .github/workflows/*.yml # workflows run on GitHub and publish to its registry and releases

@@ -29,6 +29,7 @@ Non-goals:
 | `internal/runner` | `ward runner` (see Standalone runner): the lease poll, the tree fetch from motte and the post of the result. `internal/runner/sandbox` is the sandbox seam with the implementations `container`, `gvisor` and `fake`. | W6 |
 | `internal/dispatch/pull` | The lease queue of the runners (see Dispatch). `internal/runner/install` is `ward runner install` (see Runner host). | W6 |
 | `internal/gitremote` | The seam `gitremote.Remote` (list the refs of a git remote and push refs to it), with the implementations `gitbin` (the git binary) and `fakeremote` (memory), and its suite `remotetest` (see Git access). | W2 |
+| `internal/gitcred` | The seam `gitcred.Credential` (the password of a git remote for one run), with the implementations `passwordfile` and `forgeapp` (the GitHub App exchange of GitHub App credential), and its suite `credtest`. | W2 |
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/mirror/sqlite` is its state store. | W2, W3, W4 |
 | `internal/telemetry` | OTLP export of traces and metrics. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
@@ -165,6 +166,8 @@ The mirror removes all three. It pushes from one full clone that ward owns, with
 Two entries may name the same `repo`. They share one clone and have separate state, a separate remote and separate failures. ward resolves `WARD_DATA_DIR`, `WARD_STATE_FILE` and each `credential_file` and `github_app.key_file` to absolute paths at start, because git runs with the clone as its working directory. The service refuses to start on a path that it cannot resolve, on a `name` that repeats, a `refs` list that is empty or has an invalid pattern, or an unreadable `credential_file`, or a `github_app` with an `app_id` or `installation_id` that is not positive or a `key_file` that is not a PEM RSA private key. ward reads the credential file at each push, so a rotated credential applies to the next push with no restart.
 
 ### GitHub App credential
+
+The seam `gitcred.Credential` has one method, `Use`, which returns the credential of one git run and a function that removes the file that `Use` made. `passwordfile` returns the user and the file of the entry and removes nothing. `forgeapp` is this section. `credtest.Run` checks that the file holds the secret for the user, that the release function removes only what `Use` made, and that two runs do not share a file. A failure to get a credential is a `gitcred.Error` with a kind: local, unreachable or auth.
 
 With `github_app`, ward gets the password for the remote from a GitHub App installation instead of a file. The user name is `x-access-token`.
 
@@ -508,7 +511,7 @@ Every external provider sits behind an interface that its consumer owns. A provi
 | runner-host | none — a contract of the machine | none — no code interface | none | Contract: a Linux host with a container engine, `runsc` and `/dev/kvm`, local disk, and outbound HTTPS to ward (see Runner host). |
 | mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
 | mirror-remote | `internal/gitremote.Remote` | `internal/gitremote/remotetest.Run` | `internal/gitremote/gitbin`, `internal/gitremote/fakeremote` | |
-| mirror-remote-credential | none — the GitHub App exchange is a concrete type in `internal/mirror` | none — no interface exists yet | none | No interface. Only the GitHub App credential and the password file exist. |
+| mirror-remote-credential | `internal/gitcred.Credential` | `internal/gitcred/credtest.Run` | `internal/gitcred/passwordfile`, `internal/gitcred/forgeapp` | |
 
 - A cell that names Go code is `dir.Identifier`: the directory is relative to the module root.
 - A row whose Gap cell starts with `Contract:` documents a contract of the machine with no code interface. It is not a gap, so it is not in `testdata/seam-gaps.txt`, and it needs no suite and no implementation.
