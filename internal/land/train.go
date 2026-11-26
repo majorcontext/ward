@@ -30,7 +30,7 @@ type member struct {
 // land for each member, in order, each with the tree of its trial. A failure of a read, of the trial or of the check file
 // applies to the first land only: the lands after it are judged when they are first.
 func (s *Service) runTrain(ctx context.Context, k Key, ls []Land) error {
-	reader, merger := s.client(grant.ScopeRead, k.Repo), s.client(grant.ScopeMerge, k.Repo)
+	reader, merger := s.client(grant.ScopeRead, k.Repo), s.client(grant.ScopeMerge, k.Repo, k.Ref)
 	tip, err := reader.Ref(ctx, k.Ref)
 	if err != nil {
 		return s.conclude(&ls[0], s.refusal(err))

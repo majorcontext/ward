@@ -28,8 +28,8 @@ type motteSigner struct {
 	clock Clock
 }
 
-func (m motteSigner) mint(scope grant.Scope, repo string, life time.Duration) (string, error) {
-	return grant.Signer{Kid: m.cfg.Kid, Key: m.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Subject: "ward", Exp: m.clock.Now().Add(life).Unix()})
+func (m motteSigner) mint(scope grant.Scope, repo string, life time.Duration, refs ...string) (string, error) {
+	return grant.Signer{Kid: m.cfg.Kid, Key: m.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Refs: refs, Subject: "ward", Exp: m.clock.Now().Add(life).Unix()})
 }
 
 func (m motteSigner) client(scope grant.Scope, repo string, life time.Duration) *client.Client {
@@ -56,8 +56,8 @@ func (m motteSigner) gitCreds(repo string) (gitCreds, error) {
 	return gitCreds{Header: "Authorization: Bearer " + tok}, err
 }
 
-// mergeCreds returns the header of a merge grant for one push to motte.
-func (m motteSigner) mergeCreds(repo string) (gitCreds, error) {
-	tok, err := m.mint(grant.ScopeMerge, repo, readLife)
+// mergeCreds returns the header of a merge grant for one push to motte. The grant moves only the stored refs that it names.
+func (m motteSigner) mergeCreds(repo string, refs ...string) (gitCreds, error) {
+	tok, err := m.mint(grant.ScopeMerge, repo, readLife, refs...)
 	return gitCreds{Header: "Authorization: Bearer " + tok}, err
 }

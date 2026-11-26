@@ -30,6 +30,7 @@ import (
 
 	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
+	"github.com/majorcontext/motte/grant"
 	"github.com/majorcontext/motte/testserver"
 
 	"github.com/majorcontext/ward/internal/check"
@@ -236,6 +237,7 @@ type harness struct {
 	logHook     atomic.Pointer[func(string)]
 	landRecord  chan struct{}
 	landBodies  []string
+	grants      []seenGrant
 	limitPushes atomic.Bool
 	pushesLeft  atomic.Int64
 	mu          sync.Mutex
@@ -786,6 +788,9 @@ func (h *harness) proxy() *httptest.Server {
 	target, _ := url.Parse(h.motte.URL)
 	rp := httputil.NewSingleHostReverseProxy(target)
 	h.motteProxy = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		h.grants = append(h.grants, seenGrant{r.Method, r.URL.Path, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")})
+		h.mu.Unlock()
 		if g := h.motteGate.Load(); g != nil && r.URL.Path == "/v1/subscriptions" {
 			g.entered <- struct{}{}
 			<-g.release
@@ -850,4 +855,19 @@ func (c *fakeClock) hasTimer(d time.Duration) bool {
 		}
 	}
 	return false
+}
+
+// seenGrant is a request that ward sent to motte through the proxy, with its bearer grant.
+type seenGrant struct{ method, path, token string }
+
+// claims returns the claims of the grant. It checks no signature.
+func (g seenGrant) claims(t testing.TB) grant.Claims {
+	t.Helper()
+	parts := strings.Split(g.token, ".")
+	raw, err := base64.RawURLEncoding.DecodeString(parts[len(parts)-2])
+	var c grant.Claims
+	if err != nil || json.Unmarshal(raw, &c) != nil {
+		t.Fatalf("grant of %s %s is not readable: %v", g.method, g.path, err)
+	}
+	return c
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,31 @@ func (h *harness) motteRefs() map[string]string {
 	return out
 }
 
+// wantPushGrants fails the test unless each push of ward to motte carried a grant that names one ref of want, and the
+// pushes together named every ref of want.
+func (h *harness) wantPushGrants(want ...string) {
+	h.t.Helper()
+	h.mu.Lock()
+	seen := slices.Clone(h.grants)
+	h.mu.Unlock()
+	named := map[string]bool{}
+	for _, g := range seen {
+		if !strings.HasSuffix(g.path, "/git-receive-pack") {
+			continue
+		}
+		refs := g.claims(h.t).Refs
+		if len(refs) != 1 || !slices.Contains(want, refs[0]) {
+			h.t.Errorf("a push of ward carried a grant that names %q, want one of %q", refs, want)
+		}
+		named[strings.Join(refs, ",")] = true
+	}
+	for _, name := range want {
+		if !named[name] {
+			h.t.Errorf("no push of ward carried a grant that names %q", name)
+		}
+	}
+}
+
 var seedRefs = []string{"main", "feature/*", "refs/tags/*"}
 
 func (h *harness) wantSeeded() {
@@ -77,7 +103,7 @@ func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 	h.http = true
 	h.fillRemote(2, 0)
 	hold, release := h.remote.hold()
-	p := h.startWard(wardOpts{refs: seedRefs, seed: true, noWait: true})
+	p := h.startWard(wardOpts{refs: seedRefs, seed: true, noWait: true, proxied: true})
 	<-hold
 	if st := p.status().State; st != "seeding" {
 		t.Fatalf("state during the seed = %q, want seeding", st)
@@ -85,6 +111,7 @@ func TestSeedCopiesTheRemoteOnceAndMirrorsBackAfterARestart(t *testing.T) {
 	release()
 	h.waitFor("the seed", func() bool { return h.count("seed") > 0 && h.count("reconcile") > 0 })
 	h.wantSeeded()
+	h.wantPushGrants("main", "feature/x", "refs/tags/v1")
 	h.waitFor("a synced mirror", func() bool { return p.status().State == "synced" })
 	if got := p.metric(`ward_mirror_seeds_total{mirror="m1",result="seeded"}`); got != 1 {
 		t.Fatalf("seeded = %v, want 1", got)
@@ -273,8 +300,9 @@ func TestStartDeletesOnlyTheNonMirrorableRefsThatAnEarlierSeedWrote(t *testing.T
 			t.Fatal(step)
 		}
 	}
-	p := h.startWard(wardOpts{refs: []string{"*"}, noWait: true})
+	p := h.startWard(wardOpts{refs: []string{"*"}, noWait: true, proxied: true})
 	h.waitFor("ward to start", func() bool { return h.count("init") > 0 })
+	h.wantPushGrants("refs/pull/1/head")
 	refs := h.motteRefs()
 	if _, ok := refs["refs/pull/1/head"]; ok {
 		t.Fatal("the pull ref of the seed is still in motte")
