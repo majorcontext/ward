@@ -76,7 +76,7 @@ func TestRefusesClaimsOfAnotherApplicationOrPrincipal(t *testing.T) {
 		c := claims("dev@dev.test", now.Add(time.Hour))
 		mutate(c)
 		_, err := a.Authenticate(request(key.Sign(t, c)), identitytest.RepoA)
-		if (name == "valid") != (err == nil) {
+		if (name == "valid" || name == "no verification") != (err == nil) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}

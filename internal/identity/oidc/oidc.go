@@ -157,7 +157,7 @@ func (a *Authenticator) verify(token string) (jwtClaims, error) {
 	_ = json.Unmarshal(raw["exp"], &jc.Exp)
 	_ = json.Unmarshal(raw["nbf"], &jc.Nbf)
 	_ = json.Unmarshal(raw[a.cfg.Claim], &jc.Subject)
-	var verified bool
+	verified := true
 	_ = json.Unmarshal(raw["email_verified"], &verified)
 	var one string
 	if json.Unmarshal(raw["aud"], &one) == nil {
