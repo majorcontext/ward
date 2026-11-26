@@ -41,6 +41,12 @@ type Result struct {
 	LogURL    string
 }
 
+// LeasedError means that a runner holds a live lease on the request, so the request is not replaced. Until is the end of
+// the lease.
+type LeasedError struct{ Until time.Time }
+
+func (e *LeasedError) Error() string { return "check: the request has a live lease" }
+
 // Store is the transactional state of requests and results. Each method that writes is one transaction.
 type Store interface {
 	// OpenRequest returns the open request for the key of r. With no open request and no pass for the key, it stores r and returns it with true.
@@ -49,8 +55,9 @@ type Store interface {
 	OpenRequests(ctx context.Context) ([]Request, error)
 	SetAccepted(ctx context.Context, id string, at time.Time) error
 	// Supersede closes the request old and stores next, an open request for the same key. It does nothing and returns false
-	// when old is no longer open or the key has a pass.
-	Supersede(ctx context.Context, old string, next Request) (bool, error)
+	// when old is no longer open or the key has a pass. It does nothing and returns a *LeasedError when a runner holds a
+	// lease on old that is live at now.
+	Supersede(ctx context.Context, old string, next Request, now time.Time) (bool, error)
 	// AddResult stores a result and closes its request. A pass also closes every other open request for the key.
 	// It returns false and changes nothing when the request already has a result.
 	AddResult(ctx context.Context, r Result) (bool, error)

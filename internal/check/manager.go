@@ -232,6 +232,9 @@ func (m *Manager) send(ctx context.Context, req *Request) bool {
 			return false
 		}
 		if err = m.post(ctx, *req); err == nil {
+			if m.runners[req.Repo].Pull() {
+				return true
+			}
 			now := m.clock.Now()
 			if err = m.store.SetAccepted(ctx, req.ID, now); err == nil {
 				req.AcceptedAt = now
@@ -253,7 +256,7 @@ func (m *Manager) send(ctx context.Context, req *Request) bool {
 // awaitResult waits until the request ends, or until it is late, and then replaces it. An error of the store does not end
 // the wait: it is logged and the step is tried again after the backoff.
 func (m *Manager) awaitResult(ctx context.Context, req Request) (Request, bool) {
-	late := m.clock.After(req.AcceptedAt.Add(time.Duration(req.Check.TimeoutSeconds)*time.Second + resendMargin).Sub(m.clock.Now()))
+	late := m.clock.After(m.lateIn(req, req.AcceptedAt))
 	isLate, failures := false, 0
 	for {
 		changed := m.Changed()
@@ -264,7 +267,12 @@ func (m *Manager) awaitResult(ctx context.Context, req Request) (Request, bool) 
 			}
 			if isLate {
 				var next Request
-				if next, ok, err = m.resend(ctx, req); err == nil {
+				var leased *LeasedError
+				if wait := m.lateIn(req, cur.AcceptedAt); wait > 0 {
+					late, isLate = m.clock.After(wait), false
+				} else if next, ok, err = m.resend(ctx, req); errors.As(err, &leased) {
+					late, isLate, err = m.clock.After(max(leased.Until.Sub(m.clock.Now()), time.Second)), false, nil
+				} else if err == nil {
 					return next, ok
 				}
 			}
@@ -289,6 +297,16 @@ func (m *Manager) awaitResult(ctx context.Context, req Request) (Request, bool) 
 	}
 }
 
+// lateIn returns the time until a request that a runner took at from is late. A pull request is taken when a runner leases
+// it, so it has no time to take while it waits in the queue.
+func (m *Manager) lateIn(req Request, from time.Time) time.Duration {
+	limit := time.Duration(req.Check.TimeoutSeconds)*time.Second + resendMargin
+	if from.IsZero() {
+		return limit
+	}
+	return from.Add(limit).Sub(m.clock.Now())
+}
+
 func (m *Manager) resend(ctx context.Context, old Request) (Request, bool, error) {
 	id, err := newID()
 	if err != nil {
@@ -296,7 +314,7 @@ func (m *Manager) resend(ctx context.Context, old Request) (Request, bool, error
 	}
 	next := old
 	next.ID, next.AcceptedAt, next.Open = id, time.Time{}, true
-	ok, err := m.store.Supersede(ctx, old.ID, next)
+	ok, err := m.store.Supersede(ctx, old.ID, next, m.clock.Now())
 	return next, ok, err
 }
 

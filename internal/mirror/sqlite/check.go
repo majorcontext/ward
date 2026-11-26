@@ -124,7 +124,7 @@ func (s *Store) SetAccepted(ctx context.Context, id string, at time.Time) error 
 	return s.exec(ctx, `UPDATE check_requests SET accepted_at = ? WHERE id = ?`, micro(at), id)
 }
 
-func (s *Store) Supersede(ctx context.Context, old string, next check.Request) (bool, error) {
+func (s *Store) Supersede(ctx context.Context, old string, next check.Request, now time.Time) (bool, error) {
 	done := false
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		var open, passed int
@@ -134,6 +134,13 @@ func (s *Store) Supersede(ctx context.Context, old string, next check.Request) (
 		}
 		if open == 0 || passed > 0 {
 			return nil
+		}
+		var until int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(until), 0) FROM check_leases WHERE request_id = ? AND until > ?`, old, micro(now)).Scan(&until); err != nil {
+			return err
+		}
+		if until > 0 {
+			return &check.LeasedError{Until: fromMicro(until)}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET open = 0 WHERE id = ?`, old); err != nil {
 			return err
@@ -217,6 +224,9 @@ func (s *Store) Lease(ctx context.Context, repos []string, kid, leaseID string, 
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO check_leases (lease_id, request_id, kid, until) VALUES (?, ?, ?, ?)`, leaseID, r.ID, kid, micro(until)); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET accepted_at = ? WHERE id = ?`, micro(now), r.ID); err != nil {
 			return err
 		}
 		out, leased = r, true

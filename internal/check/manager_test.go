@@ -14,6 +14,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/dispatch"
+	"github.com/majorcontext/ward/internal/dispatch/pull"
 	"github.com/majorcontext/ward/internal/dispatch/push"
 	"github.com/majorcontext/ward/internal/mirror/sqlite"
 )
@@ -134,4 +135,42 @@ func TestLateRequestIsSentAgainAfterAStoreReadFails(t *testing.T) {
 	clk.waitTimer(t, time.Second)
 	clk.advance(time.Second)
 	recv("request after the read failed")
+}
+
+func TestPullRequestIsNotReplacedWhileQueuedOrLeased(t *testing.T) {
+	t.Parallel()
+	st, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	clk := &stepClock{now: time.Unix(1_000_000, 0), added: make(chan struct{}, 64)}
+	runners := []check.Runner{{Repo: "r", Mode: check.ModePull, Kids: []string{"k"}, Env: "e"}}
+	m := check.New(st, runners, map[string]dispatch.Dispatcher{"r": pull.New(st, runners, clk)}, clk, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	_ = m.Start(ctx)
+	defer func() { cancel(); m.Wait() }()
+	_ = m.Ensure(ctx, "r", "tree", "commit", check.Check{Name: "unit", Run: []string{"x"}, TimeoutSeconds: 60})
+	open := func() string {
+		reqs, _ := st.OpenRequests(ctx)
+		if len(reqs) != 1 {
+			t.Fatalf("open requests = %v", reqs)
+		}
+		return reqs[0].ID
+	}
+	first, limit := open(), 60*time.Second+10*time.Minute
+	clk.waitTimer(t, limit)
+	clk.advance(limit)
+	clk.waitTimer(t, limit)
+	_, _, _ = st.Lease(ctx, []string{"r"}, "k", "l1", clk.Now(), clk.Now().Add(time.Hour))
+	clk.advance(limit)
+	clk.waitTimer(t, time.Hour-limit)
+	if open() != first {
+		t.Fatal("a request that waited in the queue or holds a live lease was replaced")
+	}
+	clk.advance(time.Hour - limit)
+	clk.waitTimer(t, limit)
+	if open() == first {
+		t.Fatal("a request whose lease ended was not replaced")
+	}
 }

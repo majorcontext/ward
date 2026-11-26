@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/identity/usertoken"
@@ -50,7 +51,7 @@ func TestSupersedeKeepsARequestThatAResultAlreadyEnded(t *testing.T) {
 	if _, err := s.AddResult(t.Context(), check.Result{RequestID: "a", Repo: "r", Tree: "t", Hash: "h", Env: "e", Status: check.StatusFail}); err != nil {
 		t.Fatal(err)
 	}
-	if done, err := s.Supersede(t.Context(), "a", req("b")); err != nil || done {
+	if done, err := s.Supersede(t.Context(), "a", req("b"), time.Unix(1_000_000, 0)); err != nil || done {
 		t.Fatalf("supersede of an ended request: done %v, err %v", done, err)
 	}
 	if open, err := s.OpenRequests(t.Context()); err != nil || len(open) != 0 {
