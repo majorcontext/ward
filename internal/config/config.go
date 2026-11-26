@@ -68,6 +68,14 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.Mirror.Motte = mirror.MotteConfig{URL: getenv("WARD_MOTTE_URL"), Kid: getenv("WARD_MOTTE_KID"), Key: key}
 	c.Land = land.Config{URL: c.Mirror.Motte.URL, Kid: c.Mirror.Motte.Kid, Key: key}
+	if v := getenv("WARD_LAND_REFS"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p == "" || strings.ContainsAny(p, " \t") || (strings.Contains(p, "*") && (strings.Count(p, "*") != 1 || !strings.HasSuffix(p, "*"))) {
+				return c, errors.New("WARD_LAND_REFS must be a comma-separated list of ref names or prefixes that end in *")
+			}
+			c.Land.Refs = append(c.Land.Refs, p)
+		}
+	}
 	if v := getenv("WARD_LAND_BATCH_MAX"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {

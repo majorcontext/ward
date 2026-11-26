@@ -372,3 +372,38 @@ func TestOperatorIssuesAUserTokenThatLandsUntilRevoked(t *testing.T) {
 		t.Errorf("ward token create: exit %d, stdout %q, stderr %q", code, out.String(), errOut.String())
 	}
 }
+
+func TestLandRefusesARefThatNoPatternNamesAndAnswersARepeatOfAnID(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedChecked(`{"checks":[]}`)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.branchFrom(base, "feature/y", "d.txt", "d\n")
+	post := func(extra map[string]any) (int, landState, string) {
+		code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/x", extra), nil)
+		var l landState
+		_ = json.Unmarshal(body, &l)
+		return code, l, string(body)
+	}
+	if code, _, body := post(map[string]any{"ref": "release/1"}); code != http.StatusForbidden || !strings.Contains(body, "ref_not_allowed") {
+		t.Fatalf("a ref that no pattern names: %d %s", code, body)
+	}
+	first := h.postLand(p, "main", "feature/x", map[string]any{"id": "retry-0001"})
+	if first.ID != "retry-0001" {
+		t.Fatalf("land id = %q, want the id of the caller", first.ID)
+	}
+	if code, again, body := post(map[string]any{"ref": "main", "id": "retry-0001"}); code != http.StatusAccepted || again.ID != first.ID {
+		t.Fatalf("a repeat of the id: %d %s", code, body)
+	}
+	h.awaitLand(p, first.ID, "landed")
+	if code, _, body := post(map[string]any{"ref": "other", "id": "retry-0001"}); code != http.StatusConflict || !strings.Contains(body, "land_id_in_use") {
+		t.Fatalf("the id with another ref: %d %s", code, body)
+	}
+	for _, id := range []string{"bad id", "short", "release.1", "-leading-dash", strings.Repeat("x", 49)} {
+		if code, _, body := post(map[string]any{"id": id}); code != http.StatusBadRequest {
+			t.Fatalf("the id %q: %d %s", id, code, body)
+		}
+	}
+	edge := h.postLand(p, "main", "feature/y", map[string]any{"id": "A" + strings.Repeat("_-", 23) + "z"})
+	h.awaitLand(p, edge.ID, "landed")
+}

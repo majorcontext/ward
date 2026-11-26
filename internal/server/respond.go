@@ -16,6 +16,8 @@ const (
 	codeInternal         code = "internal_error"
 	codeLandConflict     code = "land_conflict"
 	codeLandInvalid      code = "land_invalid"
+	codeRefNotAllowed    code = "ref_not_allowed"
+	codeLandIDInUse      code = "land_id_in_use"
 	codeLandTimeout      code = "land_timeout"
 	codeLeaseLost        code = "lease_lost"
 )
@@ -29,6 +31,8 @@ var statuses = map[code]int{
 	codeInternal:         http.StatusInternalServerError,
 	codeLandConflict:     http.StatusConflict,
 	codeLandInvalid:      http.StatusBadRequest,
+	codeRefNotAllowed:    http.StatusForbidden,
+	codeLandIDInUse:      http.StatusConflict,
 	codeLandTimeout:      http.StatusGatewayTimeout,
 	codeLeaseLost:        http.StatusGone,
 }
