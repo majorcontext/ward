@@ -9,5 +9,6 @@ import (
 )
 
 func TestConformance(t *testing.T) {
+	t.Parallel()
 	sandboxtest.Run(t, sandboxtest.Impl{Isolation: "", New: func(*testing.T) sandbox.Sandbox { return fake.Sandbox{} }})
 }

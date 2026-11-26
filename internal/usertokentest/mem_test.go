@@ -8,5 +8,6 @@ import (
 )
 
 func TestMem(t *testing.T) {
+	t.Parallel()
 	usertokentest.Run(t, func(*testing.T) usertoken.Store { return usertokentest.NewMem() })
 }

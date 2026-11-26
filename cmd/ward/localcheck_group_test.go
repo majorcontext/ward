@@ -12,6 +12,7 @@ import (
 
 // A timed-out check must not leave the children of its shell running.
 func TestLocalCheckTimeoutKillsChildren(t *testing.T) {
+	t.Parallel()
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	dir := writeChecks(t, `{"checks":[{"name":"hang","timeout_seconds":1,"run":["sh","-c","sleep 300 & echo $! > `+pidFile+`; wait"]}]}`)
 	var out, errb bytes.Buffer

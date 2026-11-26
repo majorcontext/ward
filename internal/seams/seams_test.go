@@ -48,6 +48,7 @@ func gapsAtMergeBase(t *testing.T) (map[string]string, bool) {
 }
 
 func TestRepositorySeams(t *testing.T) {
+	t.Parallel()
 	root := os.DirFS("../..")
 	m, err := Load(root)
 	if err != nil {
@@ -119,6 +120,7 @@ func run(t *testing.T, fsys fstest.MapFS, table string) []string {
 }
 
 func TestCheckSeams(t *testing.T) {
+	t.Parallel()
 	file := func(src string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(src)} }
 	cases := []struct {
 		name   string
@@ -165,6 +167,7 @@ func TestCheckSeams(t *testing.T) {
 }
 
 func TestCheckAllowlistsAndGaps(t *testing.T) {
+	t.Parallel()
 	m, err := Load(fixture())
 	if err != nil {
 		t.Fatal(err)

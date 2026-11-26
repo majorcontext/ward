@@ -74,6 +74,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/majorcontext/motte v0.7.0 h1:bxhTHHSFYGMc8ZdzkAXhQoIl2w1mzmZQ7nvIw1zsg/U=
 github.com/majorcontext/motte v0.7.0/go.mod h1:ceREhyYacZIYXzRYP/WvByz8/Qj/leLZjz+Ditw1uWM=
+github.com/majorcontext/tools v0.1.0 h1:GW7vqQj38Vor1ID6mqK70Rp+TSlMGbwvQ2gns309X08=
+github.com/majorcontext/tools v0.1.0/go.mod h1:pPawvSHyFRjqVrNUTHVuwHA6bnA6OCZyEziGqP+jbms=
 github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=

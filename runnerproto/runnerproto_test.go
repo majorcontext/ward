@@ -19,6 +19,7 @@ const (
 )
 
 func TestGoldenWire(t *testing.T) {
+	t.Parallel()
 	r, err := runnerproto.Decode([]byte(goldenBody))
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +33,7 @@ func TestGoldenWire(t *testing.T) {
 }
 
 func TestGoldenPullWire(t *testing.T) {
+	t.Parallel()
 	req, _ := runnerproto.Decode([]byte(goldenBody))
 	for want, v := range map[string]any{
 		goldenLeaseRequest: runnerproto.LeaseRequest{Isolation: runnerproto.IsolationGVisor},
@@ -51,6 +53,7 @@ func TestGoldenPullWire(t *testing.T) {
 }
 
 func TestDecodeRejectsWrongHash(t *testing.T) {
+	t.Parallel()
 	var m map[string]any
 	_ = json.Unmarshal([]byte(goldenBody), &m)
 	m["check_hash"] = "00"
@@ -61,6 +64,7 @@ func TestDecodeRejectsWrongHash(t *testing.T) {
 }
 
 func TestSchemaNamesTheWireFields(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("runner.schema.json")
 	if err != nil {
 		t.Fatal(err)
