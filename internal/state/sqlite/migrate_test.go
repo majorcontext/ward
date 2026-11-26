@@ -53,3 +53,18 @@ func TestOpenMigratesAFileOfTheEarlierRelease(t *testing.T) {
 		t.Fatalf("prune after the upgrade = %d, %v, want the ended land and the closed request", n, err)
 	}
 }
+
+// A production container has a read-only root and no writable temp directory, and a migration of a file with rows needs a
+// statement journal. Open must keep temporary files in memory, so it never asks the system for a temp path.
+func TestOpenKeepsTemporaryFilesInMemory(t *testing.T) {
+	t.Parallel()
+	s, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var store int
+	if err := s.db.QueryRow(`PRAGMA temp_store`).Scan(&store); err != nil || store != 2 {
+		t.Fatalf("temp_store = %d, %v; want 2 (memory)", store, err)
+	}
+}

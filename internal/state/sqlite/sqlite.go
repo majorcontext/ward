@@ -32,7 +32,7 @@ var _ mirror.Store = (*Store)(nil)
 
 // Open opens the database at path and applies the migrations that it has not seen.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
-	q := url.Values{"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(FULL)"}, "_txlock": {"immediate"}}
+	q := url.Values{"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(FULL)", "temp_store(MEMORY)"}, "_txlock": {"immediate"}}
 	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: %w", err)
