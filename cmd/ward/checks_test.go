@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,9 +369,11 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.branchFrom(base, "feature/y", "d.txt", "d\n")
 	l := h.postLand(p, "main", "feature/x", nil)
 	req := run.next()
 	h.awaitLand(p, l.ID, "checking")
+	h.postLand(p, "main", "feature/y", nil)
 	p.stop()
 	st, err := statesqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
 	if err != nil {
@@ -386,8 +387,13 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 
 	p = h.startWard(wardOpts{noMirror: true, runner: run})
 	failed := h.awaitLand(p, l.ID, "failed")
-	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" || len(run.extra()) != 0 {
-		t.Fatalf("land = %+v, %d new requests: a fail from before the restart must end the land", failed, len(run.extra()))
+	for _, r := range run.extra() {
+		if r.Tree == req.Tree {
+			t.Fatalf("a new request for the tree that failed before the restart: %+v", r)
+		}
+	}
+	if failed.Error.Code != "check_failed" || failed.Error.Details["summary"] != "boom" {
+		t.Fatalf("land = %+v: a fail from before the restart must end the land", failed)
 	}
 }
 
@@ -459,7 +465,20 @@ func (h *harness) queueBehindACheck(p *wardProc, run *fakeRunner, base string, n
 	return first, req, queued
 }
 
-func TestLandsQueuedBehindACheckLandTogetherOnOneCheckRun(t *testing.T) {
+// answerAll answers each request that the runner leases until it has n of them, with status, and returns them in order.
+func answerAll(p *wardProc, run *fakeRunner, n int, status string) []runnerRequest {
+	p.h.t.Helper()
+	var reqs []runnerRequest
+	for range n {
+		reqs = append(reqs, run.next())
+	}
+	for _, r := range reqs {
+		p.answer(r, status, "ok")
+	}
+	return reqs
+}
+
+func TestLandsQueuedBehindACheckLandInOneTrainAsOneLandEach(t *testing.T) {
 	h, run := newLandHarness(t), newRunner(t)
 	clk := newFakeClock(func() { h.note("timer", "") })
 	p := h.startWard(wardOpts{noMirror: true, proxied: true, runner: run, clock: clk})
@@ -468,33 +487,33 @@ func TestLandsQueuedBehindACheckLandTogetherOnOneCheckRun(t *testing.T) {
 	p.answer(req, "pass", "ok")
 	h.awaitLand(p, first.ID, "landed")
 
-	batch := run.next()
-	h.landTimeouts.Store(8)
-	p.answer(batch, "pass", "ok")
-	for range 8 {
-		h.waitFor("the pause before the repeat", func() bool { return clk.hasTimer(2 * time.Second) })
-		clk.advance(2 * time.Second)
-	}
+	h.landTimeouts.Store(1)
+	reqs := answerAll(p, run, 2, "pass")
+	h.waitFor("the pause before the repeat", func() bool { return clk.hasTimer(2 * time.Second) })
+	clk.advance(2 * time.Second)
 	b, c := h.awaitLand(p, queued[0].ID, "landed"), h.awaitLand(p, queued[1].ID, "landed")
 	h.git("fetch", "-q", "origin", "main")
 	h.mu.Lock()
-	var sent []string
-	for _, b := range h.landBodies {
-		if strings.Contains(b, `-b1"`) {
-			sent = append(sent, b)
+	var forB, forC []string
+	for _, body := range h.landBodies {
+		if strings.Contains(body, `"id":"`+queued[0].ID+`-1"`) {
+			forB = append(forB, body)
+		}
+		if strings.Contains(body, `"id":"`+queued[1].ID+`-1"`) {
+			forC = append(forC, body)
 		}
 	}
 	h.mu.Unlock()
-	if len(slices.Compact(slices.Clone(sent))) != 1 || len(sent) != 9 {
-		t.Fatalf("batch land calls = %q: every repeat must carry the same id and values", sent)
+	if len(forB) != 2 || forB[0] != forB[1] || len(forC) != 1 {
+		t.Fatalf("land calls for b = %q, for c = %q: each land has its own call, and the repeat of b carries the same id and values", forB, forC)
 	}
-	if len(run.extra()) != 0 || h.treeOf(h.mainTip()) != batch.Tree || c.Tip != h.mainTip() || b.Tip == c.Tip || b.Generation != c.Generation ||
-		h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" {
-		t.Fatalf("b = %+v, c = %+v, %d extra requests, main tree %s, checked tree %s", b, c, len(run.extra()), h.treeOf(h.mainTip()), batch.Tree)
+	if len(run.extra()) != 0 || reqs[0].Tree == reqs[1].Tree || h.treeOf(h.mainTip()) != reqs[1].Tree || c.Tip != h.mainTip() || b.Tip == c.Tip ||
+		b.Generation >= c.Generation || h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" {
+		t.Fatalf("b = %+v, c = %+v, trees %s and %s, main tree %s", b, c, reqs[0].Tree, reqs[1].Tree, h.treeOf(h.mainTip()))
 	}
 }
 
-func TestLandFailsOnlyTheChangeThatBreaksTheBatchAndLandsTheRest(t *testing.T) {
+func TestLandFailsOnlyTheChangeThatBreaksTheTrainAndLandsTheRest(t *testing.T) {
 	h, run := newLandHarness(t), newRunner(t)
 	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
@@ -502,25 +521,75 @@ func TestLandFailsOnlyTheChangeThatBreaksTheBatchAndLandsTheRest(t *testing.T) {
 	p.answer(req, "pass", "ok")
 	h.awaitLand(p, first.ID, "landed")
 
-	whole := run.next()
-	p.answer(whole, "fail", "c breaks it")
-	prefixB := run.next()
-	p.answer(prefixB, "pass", "ok")
-	prefixBC := run.next()
-	p.answer(prefixBC, "fail", "c breaks it")
+	reqs := []runnerRequest{run.next(), run.next(), run.next()}
+	p.answer(reqs[0], "pass", "ok")
+	p.answer(reqs[1], "fail", "c breaks it")
+	p.answer(reqs[2], "pass", "ok")
 	b, c := h.awaitLand(p, queued[0].ID, "landed"), h.awaitLand(p, queued[1].ID, "failed")
 	alone := run.next()
 	p.answer(alone, "pass", "ok")
 	d := h.awaitLand(p, queued[2].ID, "landed")
 	h.git("fetch", "-q", "origin", "main")
 	if c.Error.Code != "check_failed" || c.Error.Details["summary"] != "c breaks it" || c.Checks[0].State != "fail" || b.Checks[0].State != "pass" ||
-		h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:d.txt") != "d" || d.Tip != h.mainTip() ||
+		alone.Tree == reqs[2].Tree || h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:d.txt") != "d" || d.Tip != h.mainTip() ||
 		gitErr(h.work, "cat-file", "-e", "FETCH_HEAD:c.txt") == nil || len(run.extra()) != 0 {
 		t.Fatalf("b = %+v, c = %+v, d = %+v", b, c, d)
 	}
 }
 
-func TestLandFailsAFirstLandThatConflictsAndStillLandsTheRestOfTheBatch(t *testing.T) {
+func TestLandJudgesALandOfATrainByTheCheckFileOfTheLandBeforeIt(t *testing.T) {
+	h, run := newLandHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	base := h.seedChecked(unitChecks)
+	both := `{"checks":[{"name":"unit","run":["make","test"],"timeout_seconds":60},{"name":"lint","run":["make","lint"],"timeout_seconds":60}]}`
+	h.branchFrom(base, "feature/a", "a.txt", "a\n")
+	h.branchFrom(base, "feature/b", ".ward/checks.json", both)
+	h.branchFrom(base, "feature/c", "c.txt", "c\n")
+	first := h.postLand(p, "main", "feature/a", nil)
+	req := run.next()
+	b, c := h.postLand(p, "main", "feature/b", nil), h.postLand(p, "main", "feature/c", nil)
+	p.answer(req, "pass", "ok")
+	h.awaitLand(p, first.ID, "landed")
+
+	for range 3 {
+		r := run.next()
+		if r.Check.Name == "lint" {
+			p.answer(r, "fail", "lint breaks it")
+		} else {
+			p.answer(r, "pass", "ok")
+		}
+	}
+	h.awaitLand(p, b.ID, "landed")
+	failed := h.awaitLand(p, c.ID, "failed")
+	if failed.Error.Code != "check_failed" || failed.Error.Details["check"] != "lint" {
+		t.Fatalf("land c = %+v: it replaces the commit of b, so the check that b added judges it", failed)
+	}
+}
+
+func TestLandAsksForEachCheckDefinitionOfTheSameTreeInATrain(t *testing.T) {
+	h, run := newLandHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	base := h.seedChecked(unitChecks)
+	h.branchFrom(base, "feature/a", "a.txt", "a\n")
+	h.branchFrom(base, "feature/b", ".ward/checks.json", strings.Replace(unitChecks, `"test"`, `"test2"`, 1))
+	h.push("feature/c", h.commitOn(base, h.hist.files[base], "empty"), false)
+	first := h.postLand(p, "main", "feature/a", nil)
+	req := run.next()
+	b, c := h.postLand(p, "main", "feature/b", nil), h.postLand(p, "main", "feature/c", nil)
+	p.answer(req, "pass", "ok")
+	h.awaitLand(p, first.ID, "landed")
+
+	reqs := []runnerRequest{run.next(), run.next()}
+	if reqs[0].Tree != reqs[1].Tree || reqs[0].CheckHash == reqs[1].CheckHash {
+		t.Fatalf("requests %+v %+v: want one tree and two definitions of the check", reqs[0], reqs[1])
+	}
+	p.answer(reqs[0], "pass", "ok")
+	p.answer(reqs[1], "pass", "ok")
+	h.awaitLand(p, b.ID, "landed")
+	h.awaitLand(p, c.ID, "landed")
+}
+
+func TestLandFailsAFirstLandThatConflictsAndStillLandsTheRestOfTheTrain(t *testing.T) {
 	h, run := newLandHarness(t), newRunner(t)
 	p := h.startWard(wardOpts{noMirror: true, runner: run})
 	base := h.seedChecked(unitChecks)
@@ -529,7 +598,7 @@ func TestLandFailsAFirstLandThatConflictsAndStillLandsTheRestOfTheBatch(t *testi
 	h.awaitLand(p, first.ID, "landed")
 
 	conflict := h.awaitLand(p, queued[0].ID, "failed")
-	p.answer(run.next(), "pass", "ok")
+	answerAll(p, run, 2, "pass")
 	h.awaitLand(p, queued[1].ID, "landed")
 	h.awaitLand(p, queued[2].ID, "landed")
 	h.git("fetch", "-q", "origin", "main")

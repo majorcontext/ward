@@ -138,12 +138,8 @@ func TestLandFindsTheBaseItselfWithoutOneAndUsesTheBaseThatTheCallerSends(t *tes
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	other := h.branchFrom(base, "feature/y", "d.txt", "d\n")
 	h.protectMain()
-	post := func(branch string, extra map[string]any) landState {
-		m := map[string]any{"repo": h.repo, "branch": branch}
-		for k, v := range extra {
-			m[k] = v
-		}
-		raw, _ := json.Marshal(m)
+	post := func(branch string) landState {
+		raw, _ := json.Marshal(map[string]any{"repo": h.repo, "branch": branch})
 		code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), raw, nil)
 		var l landState
 		if code != http.StatusAccepted || json.Unmarshal(body, &l) != nil {
@@ -158,7 +154,7 @@ func TestLandFindsTheBaseItselfWithoutOneAndUsesTheBaseThatTheCallerSends(t *tes
 		}
 	}
 
-	old := h.awaitLand(p, post("feature/x", nil).ID, "landed")
+	old := h.awaitLand(p, post("feature/x").ID, "landed")
 	select {
 	case <-warned:
 	default:
@@ -167,9 +163,25 @@ func TestLandFindsTheBaseItselfWithoutOneAndUsesTheBaseThatTheCallerSends(t *tes
 	if old.Error != nil || old.Tip == "" {
 		t.Fatalf("land without a base = %+v", old)
 	}
-	wrong := h.awaitLand(p, post("feature/y", map[string]any{"base": other}).ID, "failed")
-	if wrong.Error.Code != "land_invalid" {
-		t.Fatalf("land with a base that the range does not reach = %+v: the base of the caller must be used unchanged", wrong.Error)
+	raw, _ := json.Marshal(map[string]string{"repo": h.repo, "branch": "feature/y", "base": other})
+	if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), raw, nil); code != http.StatusBadRequest || !strings.Contains(string(body), "land_invalid") {
+		t.Fatalf("land with a base that the range does not reach = %d %s: the base of the caller must be used unchanged, and motte refuses it", code, body)
+	}
+}
+
+func TestLandRefusesAtEnqueueAChangeThatIsTooLargeForOneLand(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	tip := h.chainOn(base, map[string]string{"a.txt": "base\n"}, 1001)
+	h.push("feature/big", tip, false)
+	h.branchFrom(base, "feature/small", "c.txt", "c\n")
+	code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/big", nil), nil)
+	if code != http.StatusBadRequest || !strings.Contains(string(body), "land_invalid") {
+		t.Fatalf("a range of 1001 commits: status = %d %s, want 400 land_invalid", code, body)
+	}
+	if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/small", nil), nil); code != http.StatusAccepted {
+		t.Fatalf("a small change: status = %d %s", code, body)
 	}
 }
 
