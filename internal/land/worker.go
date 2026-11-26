@@ -14,6 +14,8 @@ import (
 	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
 
+	"github.com/majorcontext/ward/wardapi"
+
 	"github.com/majorcontext/ward/internal/check"
 )
 
@@ -37,7 +39,7 @@ const (
 type outcome struct {
 	kind      kind
 	err       *Error
-	retryCode string
+	retryCode wardapi.Code
 	// keepCall marks a land call that ended with no definite answer of motte. The retry repeats the stored call with the same
 	// id, because motte may have done it, and it does not count toward maxRetries.
 	keepCall  bool

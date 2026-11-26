@@ -22,6 +22,7 @@ Non-goals:
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
 | `internal/identity` | The seam that turns the credential of a request into claims, its suite and its three implementations, and the per-user token store (see Provider seams). | W5 |
+| `wardapi` | The public wire types: the land request, the land view, the error body and the error codes. `ward land` and the server both use them, so no type is copied. | W3 |
 | `internal/server` | HTTP routes, error envelope, token checks, status API, land route. | W2, W3, W4 |
 | `internal/land` | The land (see Land): merge base, the land queue, the candidate and the call to motte. | W3, W5 |
 | `internal/check` | Checks (see Checks): the check file, the result store, and the delivery of check requests to the runner. | W5 |
@@ -131,7 +132,7 @@ The local loop of a person needs no identity provider, no tunnel and no box: an 
 
 ## Errors
 
-The error body is `{"error":{"code","message","details"}}`. Codes: `unauthorized` (401), `forbidden` (403), `not_found` (404), `invalid_body` (400), `method_not_allowed` (405), `internal_error` (500), `land_conflict` (409, with `details.paths`), `land_invalid` (400) and `land_timeout` (504). A land that fails in the queue carries one of these codes, or `check_failed` or `land_stale`, in its `error` (see Land). A panic in a handler is logged with its stack and answers 500 `internal_error` when the handler sent no status yet.
+The error body is `{"error":{"code","message","details"}}`; `details` is `null` when the error has none, in a response and in the `error` of a land alike. The package `wardapi` defines the body and the codes. Codes: `unauthorized` (401), `forbidden` (403), `not_found` (404), `invalid_body` (400), `method_not_allowed` (405), `internal_error` (500), `land_conflict` (409, with `details.paths`), `land_invalid` (400) and `land_timeout` (504). A land that fails in the queue carries one of these codes, or `check_failed` or `land_stale`, in its `error` (see Land). A panic in a handler is logged with its stack and answers 500 `internal_error` when the handler sent no status yet.
 
 ## Mirror
 

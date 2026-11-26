@@ -16,6 +16,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/devicelogin"
 	"github.com/majorcontext/ward/internal/token"
+	"github.com/majorcontext/ward/wardapi"
 )
 
 const maxTokenAnswer = 16 << 20
@@ -121,7 +122,7 @@ func sendToken(ctx context.Context, method, target, tok string, body []byte) ([]
 		return nil, errors.New("the answer is unreadable or too large")
 	}
 	if resp.StatusCode/100 != 2 {
-		var env landEnvelope
+		var env wardapi.ErrorBody
 		_ = json.Unmarshal(raw, &env)
 		return nil, fmt.Errorf("status %d: %s: %s", resp.StatusCode, env.Error.Code, env.Error.Message)
 	}

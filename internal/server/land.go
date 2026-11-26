@@ -13,6 +13,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/token"
+	"github.com/majorcontext/ward/wardapi"
 )
 
 const (
@@ -21,35 +22,13 @@ const (
 	bodyReadLimit = 10 * time.Second
 )
 
-type landRequest struct {
-	ID           string `json:"id"`
-	Repo         string `json:"repo"`
-	Ref          string `json:"ref"`
-	Branch       string `json:"branch"`
-	DeleteBranch bool   `json:"delete_branch"`
-}
+type landRequest = wardapi.LandRequest
 
-type landView struct {
-	ID            string             `json:"id"`
-	Repo          string             `json:"repo"`
-	Ref           string             `json:"ref"`
-	Branch        string             `json:"branch"`
-	State         land.State         `json:"state"`
-	Tree          string             `json:"tree"`
-	Checks        []land.CheckState  `json:"checks"`
-	Tip           string             `json:"tip"`
-	Generation    int64              `json:"generation"`
-	FastForward   bool               `json:"fast_forward"`
-	Commits       []api.LandedCommit `json:"commits"`
-	BranchDeleted bool               `json:"branch_deleted"`
-	Error         *land.Error        `json:"error"`
-}
-
-func viewOf(l land.Land) landView {
-	v := landView{ID: l.ID, Repo: l.Repo, Ref: l.Ref, Branch: l.Branch, State: l.State, Tree: l.Tree, Checks: l.Checks, Tip: l.Tip,
+func viewOf(l land.Land) wardapi.Land {
+	v := wardapi.Land{ID: l.ID, Repo: l.Repo, Ref: l.Ref, Branch: l.Branch, State: l.State, Tree: l.Tree, Checks: l.Checks, Tip: l.Tip,
 		Generation: l.Generation, FastForward: l.FastForward, Commits: l.Commits, BranchDeleted: l.BranchDeleted, Error: l.Error}
 	if v.Checks == nil {
-		v.Checks = []land.CheckState{}
+		v.Checks = []wardapi.LandCheck{}
 	}
 	if v.Commits == nil {
 		v.Commits = []api.LandedCommit{}

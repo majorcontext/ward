@@ -5,45 +5,35 @@ import (
 
 	"github.com/majorcontext/motte/api"
 
-	"github.com/majorcontext/ward/internal/check"
+	"github.com/majorcontext/ward/wardapi"
 )
 
 // State is the state of a land.
-type State string
+type State = wardapi.LandState
 
 const (
-	Queued   State = "queued"
-	Checking State = "checking"
-	Landing  State = "landing"
-	Landed   State = "landed"
-	Failed   State = "failed"
+	Queued   = wardapi.LandQueued
+	Checking = wardapi.LandChecking
+	Landing  = wardapi.LandLanding
+	Landed   = wardapi.LandLanded
+	Failed   = wardapi.LandFailed
 )
-
-// Ended reports whether the land has ended.
-func (s State) Ended() bool { return s == Landed || s == Failed }
 
 // The codes of a failed land.
 const (
-	CodeConflict    = "land_conflict"
-	CodeInvalid     = "land_invalid"
-	CodeTimeout     = "land_timeout"
-	CodeCheckFailed = "check_failed"
-	CodeStale       = "land_stale"
-	CodeInternal    = "internal_error"
+	CodeConflict    = wardapi.CodeLandConflict
+	CodeInvalid     = wardapi.CodeLandInvalid
+	CodeTimeout     = wardapi.CodeLandTimeout
+	CodeCheckFailed = wardapi.CodeCheckFailed
+	CodeStale       = wardapi.CodeLandStale
+	CodeInternal    = wardapi.CodeInternal
 )
 
 // CheckState is one required check and its state.
-type CheckState struct {
-	Name  string      `json:"name"`
-	State check.State `json:"state"`
-}
+type CheckState = wardapi.LandCheck
 
 // Error says why a land failed.
-type Error struct {
-	Code    string         `json:"code"`
-	Message string         `json:"message"`
-	Details map[string]any `json:"details,omitempty"`
-}
+type Error = wardapi.Error
 
 // Call is the final land call to motte, stored before it is sent so that a repeat after a restart carries the same values.
 type Call struct {

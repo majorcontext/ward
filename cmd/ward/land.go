@@ -16,6 +16,7 @@ import (
 	"github.com/majorcontext/ward/internal/config"
 	"github.com/majorcontext/ward/internal/devicelogin"
 	"github.com/majorcontext/ward/internal/token"
+	"github.com/majorcontext/ward/wardapi"
 )
 
 const (
@@ -31,35 +32,6 @@ const (
 	// landRetryLast is the time that the last read of the window gets.
 	landRetryLast = time.Second
 )
-
-type landAnswer struct {
-	ID     string `json:"id"`
-	State  string `json:"state"`
-	Ref    string `json:"ref"`
-	Checks []struct {
-		Name  string `json:"name"`
-		State string `json:"state"`
-	} `json:"checks"`
-	Tip         string `json:"tip"`
-	Generation  int64  `json:"generation"`
-	FastForward bool   `json:"fast_forward"`
-	Commits     []struct {
-		Old string `json:"old"`
-		New string `json:"new"`
-	} `json:"commits"`
-	BranchDeleted bool       `json:"branch_deleted"`
-	Error         *landError `json:"error"`
-}
-
-type landError struct {
-	Code    string         `json:"code"`
-	Message string         `json:"message"`
-	Details map[string]any `json:"details"`
-}
-
-type landEnvelope struct {
-	Error landError `json:"error"`
-}
 
 // credential returns WARD_TOKEN, or a token of scope for repo that it signs with the key file of WARD_KEY_FILE and WARD_KID, or
 // the token that `ward login` saved. It returns no token when only WARD_ACCESS_TOKEN is set: the proxy then proves the identity.
@@ -113,29 +85,29 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 	}
 	c := &landClient{base: strings.TrimRight(getenv("WARD_URL"), "/"), tok: tok}
 	c.accessName, c.accessValue = accessHeader(getenv)
-	body, _ := json.Marshal(map[string]any{"repo": repo, "ref": *ref, "branch": branch, "delete_branch": *del})
+	body, _ := json.Marshal(wardapi.LandRequest{Repo: repo, Ref: *ref, Branch: branch, DeleteBranch: *del})
 	cur, code := c.call(ctx, http.MethodPost, "/v1/lands", body, stderr)
 	if code != 0 {
 		return code
 	}
 	announced := false
 	for {
-		if !announced && cur.State == "checking" {
+		if !announced && cur.State == wardapi.LandChecking {
 			announced = true
 			for _, ck := range cur.Checks {
-				if ck.State != "pass" && ck.State != "flaky" {
+				if ck.State != wardapi.CheckPass && ck.State != wardapi.CheckFlaky {
 					fmt.Fprintln(stdout, "checking", ck.Name)
 				}
 			}
 		}
 		switch cur.State {
-		case "landed":
+		case wardapi.LandLanded:
 			printLanded(stdout, cur, branch, repo)
 			return 0
-		case "failed":
+		case wardapi.LandFailed:
 			return printLandError(stderr, cur.Error)
 		}
-		path := "/v1/lands/" + cur.ID + "?wait=" + strconv.Itoa(landWaitSecs) + "&state=" + cur.State
+		path := "/v1/lands/" + cur.ID + "?wait=" + strconv.Itoa(landWaitSecs) + "&state=" + string(cur.State)
 		if cur, code = c.poll(ctx, cur.ID, path, stderr); code != 0 {
 			return code
 		}
@@ -144,7 +116,7 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 
 // poll reads a land that the server has accepted. The land goes on without the client, so a transport error or a 5xx answer
 // is tried again with a growing pause until landRetryWindow passes without one good answer.
-func (c *landClient) poll(ctx context.Context, id, path string, stderr io.Writer) (landAnswer, int) {
+func (c *landClient) poll(ctx context.Context, id, path string, stderr io.Writer) (wardapi.Land, int) {
 	var deadline time.Time
 	pause := landRetryFirst
 	for {
@@ -158,14 +130,14 @@ func (c *landClient) poll(ctx context.Context, id, path string, stderr io.Writer
 		}
 		if !fail.transient {
 			fmt.Fprintln(stderr, "ward land:", fail.msg)
-			return landAnswer{}, fail.exit
+			return wardapi.Land{}, fail.exit
 		}
 		if deadline.IsZero() {
 			deadline = time.Now().Add(landRetryWindow)
 		}
 		if ctx.Err() != nil || time.Until(deadline) <= landRetryLast {
 			fmt.Fprintf(stderr, "ward land: lost contact with the server (%s); land %s may still finish: read GET /v1/lands/%s on WARD_URL to see its state\n", fail.msg, id, id)
-			return landAnswer{}, 1
+			return wardapi.Land{}, 1
 		}
 		fmt.Fprintf(stderr, "ward land: %s; reading land %s again\n", fail.msg, id)
 		select {
@@ -191,21 +163,21 @@ type callFailure struct {
 
 // call sends one request and decodes the land of the answer. A non-zero code is the exit code of a failure that it has reported.
 // A POST goes through call and is never repeated: each POST makes a new land.
-func (c *landClient) call(ctx context.Context, method, path string, body []byte, stderr io.Writer) (landAnswer, int) {
+func (c *landClient) call(ctx context.Context, method, path string, body []byte, stderr io.Writer) (wardapi.Land, int) {
 	out, fail := c.send(ctx, method, path, body, landReadLimit)
 	if fail != nil {
 		fmt.Fprintln(stderr, "ward land:", fail.msg)
-		return landAnswer{}, fail.exit
+		return wardapi.Land{}, fail.exit
 	}
 	return out, 0
 }
 
-func (c *landClient) send(ctx context.Context, method, path string, body []byte, limit time.Duration) (landAnswer, *callFailure) {
+func (c *landClient) send(ctx context.Context, method, path string, body []byte, limit time.Duration) (wardapi.Land, *callFailure) {
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
 	if err != nil {
-		return landAnswer{}, &callFailure{exit: 2, msg: "WARD_URL is not a URL"}
+		return wardapi.Land{}, &callFailure{exit: 2, msg: "WARD_URL is not a URL"}
 	}
 	if c.tok != "" {
 		req.Header.Set("Authorization", "Bearer "+c.tok)
@@ -216,32 +188,32 @@ func (c *landClient) send(ctx context.Context, method, path string, body []byte,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := noRedirect.Do(req)
 	if err != nil {
-		return landAnswer{}, &callFailure{exit: 1, msg: "the request failed", transient: true}
+		return wardapi.Land{}, &callFailure{exit: 1, msg: "the request failed", transient: true}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxLandAnswer))
 	ok := resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted
 	if err != nil && (ok || resp.StatusCode >= 500) {
-		return landAnswer{}, &callFailure{exit: 1, msg: "the answer was cut off", transient: true}
+		return wardapi.Land{}, &callFailure{exit: 1, msg: "the answer was cut off", transient: true}
 	}
 	if !ok && resp.StatusCode != http.StatusAccepted {
 		fail := &callFailure{exit: 1, transient: resp.StatusCode >= 500}
-		var env landEnvelope
+		var env wardapi.ErrorBody
 		if err != nil || json.Unmarshal(raw, &env) != nil {
 			fail.msg = fmt.Sprintf("status %d with no JSON body", resp.StatusCode)
 		} else {
 			fail.msg = fmt.Sprintf("status %d: %s: %s", resp.StatusCode, env.Error.Code, env.Error.Message)
 		}
-		return landAnswer{}, fail
+		return wardapi.Land{}, fail
 	}
-	var out landAnswer
+	var out wardapi.Land
 	if json.Unmarshal(raw, &out) != nil || out.ID == "" {
-		return landAnswer{}, &callFailure{exit: 1, msg: fmt.Sprintf("status %d with no land", resp.StatusCode)}
+		return wardapi.Land{}, &callFailure{exit: 1, msg: fmt.Sprintf("status %d with no land", resp.StatusCode)}
 	}
 	return out, nil
 }
 
-func printLanded(stdout io.Writer, out landAnswer, branch, repo string) {
+func printLanded(stdout io.Writer, out wardapi.Land, branch, repo string) {
 	fmt.Fprintf(stdout, "landed %s on %s %s\ntip %s\ngeneration %d\n", branch, repo, out.Ref, out.Tip, out.Generation)
 	if out.FastForward {
 		fmt.Fprintln(stdout, "fast-forward")
@@ -254,19 +226,19 @@ func printLanded(stdout io.Writer, out landAnswer, branch, repo string) {
 	}
 }
 
-func printLandError(stderr io.Writer, e *landError) int {
+func printLandError(stderr io.Writer, e *wardapi.Error) int {
 	if e == nil {
 		fmt.Fprintln(stderr, "ward land: the land failed")
 		return 1
 	}
 	fmt.Fprintf(stderr, "ward land: %s: %s\n", e.Code, e.Message)
 	switch e.Code {
-	case "land_conflict":
+	case wardapi.CodeLandConflict:
 		paths, _ := e.Details["paths"].([]any)
 		for _, p := range paths {
 			fmt.Fprintln(stderr, p)
 		}
-	case "check_failed":
+	case wardapi.CodeCheckFailed:
 		for _, k := range []string{"check", "summary", "log_url"} {
 			fmt.Fprintf(stderr, "%s: %v\n", k, e.Details[k])
 		}

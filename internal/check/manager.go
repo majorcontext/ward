@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/runnerproto"
+	"github.com/majorcontext/ward/wardapi"
 )
 
 const resendMargin = 10 * time.Minute
@@ -27,13 +28,13 @@ var (
 )
 
 // State is the state of one check for one tree.
-type State string
+type State = wardapi.CheckStatus
 
 const (
-	Pending State = "pending"
-	Pass    State = "pass"
-	Fail    State = "fail"
-	Flaky   State = "flaky"
+	Pending = wardapi.CheckPending
+	Pass    = wardapi.CheckPass
+	Fail    = wardapi.CheckFail
+	Flaky   = wardapi.CheckFlaky
 )
 
 // Verdict is the state of one check, and the failing result when the state is Fail.

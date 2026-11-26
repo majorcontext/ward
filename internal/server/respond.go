@@ -3,23 +3,25 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/majorcontext/ward/wardapi"
 )
 
-type code string
+type code = wardapi.Code
 
 const (
-	codeUnauthorized     code = "unauthorized"
-	codeForbidden        code = "forbidden"
-	codeNotFound         code = "not_found"
-	codeInvalidBody      code = "invalid_body"
-	codeMethodNotAllowed code = "method_not_allowed"
-	codeInternal         code = "internal_error"
-	codeLandConflict     code = "land_conflict"
-	codeLandInvalid      code = "land_invalid"
-	codeRefNotAllowed    code = "ref_not_allowed"
-	codeLandIDInUse      code = "land_id_in_use"
-	codeLandTimeout      code = "land_timeout"
-	codeLeaseLost        code = "lease_lost"
+	codeUnauthorized     = wardapi.CodeUnauthorized
+	codeForbidden        = wardapi.CodeForbidden
+	codeNotFound         = wardapi.CodeNotFound
+	codeInvalidBody      = wardapi.CodeInvalidBody
+	codeMethodNotAllowed = wardapi.CodeMethodNotAllowed
+	codeInternal         = wardapi.CodeInternal
+	codeLandConflict     = wardapi.CodeLandConflict
+	codeLandInvalid      = wardapi.CodeLandInvalid
+	codeRefNotAllowed    = wardapi.CodeRefNotAllowed
+	codeLandIDInUse      = wardapi.CodeLandIDInUse
+	codeLandTimeout      = wardapi.CodeLandTimeout
+	codeLeaseLost        = wardapi.CodeLeaseLost
 )
 
 var statuses = map[code]int{
@@ -37,21 +39,11 @@ var statuses = map[code]int{
 	codeLeaseLost:        http.StatusGone,
 }
 
-type errorBody struct {
-	Error struct {
-		Code    code           `json:"code"`
-		Message string         `json:"message"`
-		Details map[string]any `json:"details"`
-	} `json:"error"`
-}
-
 // writeError is the only writer of an error body.
 func writeError(w http.ResponseWriter, c code, message string) { writeErrorDetails(w, c, message, nil) }
 
 func writeErrorDetails(w http.ResponseWriter, c code, message string, details map[string]any) {
-	var b errorBody
-	b.Error.Code, b.Error.Message, b.Error.Details = c, message, details
-	writeJSON(w, statuses[c], b)
+	writeJSON(w, statuses[c], wardapi.ErrorBody{Error: wardapi.Error{Code: c, Message: message, Details: details}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
