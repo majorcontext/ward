@@ -90,7 +90,7 @@ func mergeBase(ctx context.Context, dir, remote, branch, ref string) (string, er
 	return strings.TrimSpace(string(out)), nil
 }
 
-// runLand is `ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
+// runLand is `ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
 func runLand(ctx context.Context, args []string, getenv func(string) string, now func() time.Time, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("land", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -98,8 +98,9 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 	del := fs.Bool("delete-branch", false, "delete the branch after it landed")
 	dir := fs.String("C", ".", "git working tree that holds the branch")
 	remote := fs.String("remote", "origin", "git remote that tracks the repository")
+	baseFlag := fs.String("base", "", "commit that the branch was built on, sent as is")
 	if fs.Parse(args) != nil || fs.NArg() != 2 || getenv("WARD_URL") == "" {
-		fmt.Fprintln(stderr, "usage: WARD_URL=... ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] REPO BRANCH")
+		fmt.Fprintln(stderr, "usage: WARD_URL=... ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH")
 		return 2
 	}
 	repo, branch := fs.Arg(0), fs.Arg(1)
@@ -108,10 +109,14 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		fmt.Fprintln(stderr, "ward land:", err)
 		return 2
 	}
-	base, err := mergeBase(ctx, *dir, *remote, branch, *ref)
-	if err != nil {
-		fmt.Fprintln(stderr, "ward land:", err)
-		return 2
+	base := *baseFlag
+	if base == "" {
+		if exec.CommandContext(ctx, "git", "-C", *dir, "rev-parse", "--git-dir").Run() != nil {
+			fmt.Fprintln(stderr, "ward land: no git working tree in "+*dir+": the server finds the base")
+		} else if base, err = mergeBase(ctx, *dir, *remote, branch, *ref); err != nil {
+			fmt.Fprintln(stderr, "ward land:", err)
+			return 2
+		}
 	}
 	c := &landClient{base: strings.TrimRight(getenv("WARD_URL"), "/"), tok: tok}
 	c.accessName, c.accessValue = accessHeader(getenv)

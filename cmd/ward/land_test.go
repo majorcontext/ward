@@ -158,7 +158,7 @@ func TestLandFindsTheBaseItselfWithoutOneAndUsesTheBaseThatTheCallerSends(t *tes
 	select {
 	case <-warned:
 	default:
-		t.Error("a land without a base logged no warning about the deprecated path")
+		t.Error("a land without a base logged no line about it")
 	}
 	if old.Error != nil || old.Tip == "" {
 		t.Fatalf("land without a base = %+v", old)

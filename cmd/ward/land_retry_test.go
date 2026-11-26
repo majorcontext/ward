@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -75,5 +76,23 @@ func TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain(t *testing.T
 				}
 			})
 		})
+	}
+}
+
+func TestLandCommandSendsTheBaseOfTheCallerAndNoBaseOutsideAGitWorkingTree(t *testing.T) {
+	t.Parallel()
+	for args, want := range map[string]string{"": `{"repo":"native:r","ref":"main","branch":"b","delete_branch":false}`, "--base,x,": `"base":"x"`} {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			got += string(b)
+			io.WriteString(w, `{"id":"L1","state":"landed"}`)
+		}))
+		defer srv.Close()
+		env := map[string]string{"WARD_URL": srv.URL, "WARD_TOKEN": "t"}
+		a := append(append([]string{"-C", t.TempDir()}, strings.Split(args, ",")...), "native:r", "b")
+		if code := runLand(t.Context(), slices.DeleteFunc(a, func(s string) bool { return s == "" }), func(k string) string { return env[k] }, time.Now, io.Discard, io.Discard); code != 0 || !strings.Contains(got, strings.TrimSuffix(want, "}")) {
+			t.Errorf("args %q: exit %d, sent %s, want %s", args, code, got, want)
+		}
 	}
 }

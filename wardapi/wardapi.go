@@ -74,7 +74,7 @@ type LandRequest struct {
 	Branch string `json:"branch"`
 	// Base is the commit that the branch was built on: the merge base of the branch and the ref, which the caller finds
 	// with git from its own history.
-	Base         string `json:"base"`
+	Base         string `json:"base,omitempty"`
 	DeleteBranch bool   `json:"delete_branch"`
 }
 

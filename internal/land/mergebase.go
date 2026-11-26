@@ -10,21 +10,19 @@ import (
 	"github.com/majorcontext/motte/client"
 )
 
-// maxWalk is the most commits that the deprecated merge base walks on each side.
+// maxWalk is the most commits that the merge base walks on each side.
 const maxWalk = 10000
 
 // ErrNoMergeBase means that the first-parent chain of the branch never meets the first-parent chain of the target ref.
 var ErrNoMergeBase = errors.New("land: the branch has no merge base with the ref")
 
 // baseOf returns the base of a land. A land that carries its base uses it. A land without one comes from a caller that
-// predates the field, and ward finds the base itself.
-//
-// Deprecated: a later release removes the walk, after the callers pin a `ward land` that sends the base.
+// has no local history, and ward finds the base itself.
 func (s *Service) baseOf(ctx context.Context, c *client.Client, l *Land, tip, head string) (string, error) {
 	if l.Base != "" {
 		return l.Base, nil
 	}
-	s.log.Warn("land without a base: ward finds the merge base itself, a deprecated path that a later release removes; use a ward land that sends the base", "land", l.ID)
+	s.log.Info("land without a base: ward finds the merge base itself", "land", l.ID)
 	return mergeBase(ctx, c, tip, head)
 }
 
