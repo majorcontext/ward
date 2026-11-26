@@ -37,6 +37,11 @@ const (
 	// DefaultBatchMax is the most lands that one check run judges when Config.BatchMax is zero.
 	DefaultBatchMax = 8
 	startBatch      = 2
+	// sweepEvery is the time between two kicks of every queue that has lands.
+	sweepEvery = time.Minute
+	// storeBackoffMin and storeBackoffMax bound the wait before a worker retries a failed store operation.
+	storeBackoffMin = time.Second
+	storeBackoffMax = time.Minute
 )
 
 var tracer = otel.Tracer("github.com/majorcontext/ward/internal/land")
@@ -131,7 +136,31 @@ func (s *Service) Start(ctx context.Context) error {
 	for _, k := range keys {
 		s.kick(k)
 	}
+	s.wg.Add(1)
+	go s.sweep(ctx)
 	return nil
+}
+
+// sweep kicks every queue that has lands, so that a lost worker restarts.
+func (s *Service) sweep(ctx context.Context) {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.clock.After(sweepEvery):
+		case <-ctx.Done():
+			return
+		}
+		keys, err := s.store.UnfinishedKeys(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Error("sweep the land queues", "error", err.Error())
+			}
+			continue
+		}
+		for _, k := range keys {
+			s.kick(k)
+		}
+	}
 }
 
 // Wait returns when every queue has stopped. Call it after the context of Start ends.
@@ -247,6 +276,7 @@ func (s *Service) retire(k Key, wake chan struct{}) bool {
 
 func (s *Service) work(k Key, wake chan struct{}) {
 	defer s.wg.Done()
+	backoff := time.Duration(0)
 	for {
 		ls, err := s.store.NextLands(s.ctx, k, s.batchMax())
 		switch {
@@ -254,18 +284,29 @@ func (s *Service) work(k Key, wake chan struct{}) {
 			if s.ctx.Err() == nil {
 				s.log.Error("read the land queue", "repo", k.Repo, "ref", k.Ref, "error", err.Error())
 			}
-			s.retireNow(k)
-			return
 		case len(ls) == 0:
 			if s.retire(k, wake) {
 				return
 			}
+			backoff = 0
 			continue
-		}
-		if err := s.step(k, ls); err != nil {
-			if s.ctx.Err() == nil {
+		default:
+			if err = s.step(k, ls); err != nil && s.ctx.Err() == nil {
 				s.log.Error("record the land", "land", ls[0].ID, "error", err.Error())
 			}
+		}
+		if s.ctx.Err() != nil {
+			s.retireNow(k)
+			return
+		}
+		if err == nil {
+			backoff = 0
+			continue
+		}
+		backoff = min(max(2*backoff, storeBackoffMin), storeBackoffMax)
+		select {
+		case <-s.clock.After(backoff):
+		case <-s.ctx.Done():
 			s.retireNow(k)
 			return
 		}

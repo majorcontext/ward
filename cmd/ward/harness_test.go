@@ -703,6 +703,7 @@ type fakeClock struct {
 type fakeTimer struct {
 	at time.Time
 	ch chan time.Time
+	d  time.Duration
 }
 
 func newFakeClock(onAdd func()) *fakeClock { return &fakeClock{now: time.Now(), onAdd: onAdd} }
@@ -720,7 +721,7 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 		return ch
 	}
 	c.mu.Lock()
-	c.timers = append(c.timers, fakeTimer{at: c.now.Add(d), ch: ch})
+	c.timers = append(c.timers, fakeTimer{at: c.now.Add(d), ch: ch, d: d})
 	c.mu.Unlock()
 	c.onAdd()
 	return ch
@@ -729,7 +730,13 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 func (c *fakeClock) pending() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.timers)
+	n := 0
+	for _, t := range c.timers {
+		if t.d != time.Minute { // the sweep of the land queues always waits
+			n++
+		}
+	}
+	return n
 }
 
 func (c *fakeClock) advance(d time.Duration) {

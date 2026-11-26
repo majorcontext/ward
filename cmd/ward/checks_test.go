@@ -398,8 +398,9 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 	}
 }
 
-func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) {
+func TestLandRetriesAStoreErrorWithBackoffAndLandsWhenTheStoreRecovers(t *testing.T) {
 	h, run := newLandHarness(t), newRunner(t)
+	clk := newFakeClock(func() { h.note("timer", "") })
 	logged := make(chan struct{}, 1)
 	hook := func(line string) {
 		if strings.Contains(line, "record the land") {
@@ -410,7 +411,7 @@ func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) 
 		}
 	}
 	h.logHook.Store(&hook)
-	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	p := h.startWard(wardOpts{noMirror: true, runner: run, clock: clk})
 	base := h.seedChecked(unitChecks)
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	l := h.postLand(p, "main", "feature/x", nil)
@@ -446,8 +447,8 @@ func TestLandStopsItsWorkerOnAStoreErrorAndLeavesTheLandResumable(t *testing.T) 
 	if _, err := db.ExecContext(t.Context(), `DROP TRIGGER failwrite`); err != nil {
 		t.Fatal(err)
 	}
-	p.stop()
-	p = h.startWard(wardOpts{noMirror: true, runner: run})
+	h.waitFor("the backoff of the worker", func() bool { return clk.hasTimer(time.Second) })
+	clk.advance(time.Second)
 	h.awaitLand(p, l.ID, "landed")
 }
 
