@@ -125,7 +125,11 @@ func (s *Service) attempt(ctx context.Context, l *Land) outcome {
 		end(err)
 		return s.refusal(err)
 	}
-	base := l.Base
+	base, err := s.baseOf(pctx, reader, l, tip.Commit, branch.Commit)
+	if err != nil {
+		end(err)
+		return s.refusal(err)
+	}
 	candidate, tree, err := s.candidate(pctx, reader, merger, l, tip.Commit, base, branch.Commit)
 	end(err, attribute.Bool("fast_forward", base == tip.Commit))
 	if err != nil {
@@ -156,7 +160,7 @@ func (s *Service) refusal(err error) outcome {
 			paths = []string{}
 		}
 		return outcome{kind: failed, err: &Error{Code: CodeConflict, Message: "the branch changes paths that changed on the ref", Details: map[string]any{"paths": paths}}}
-	case errors.Is(err, client.ErrLandInvalid), errors.Is(err, client.ErrNotFound), errors.Is(err, client.ErrObjectTooLarge):
+	case errors.Is(err, client.ErrLandInvalid), errors.Is(err, ErrNoMergeBase), errors.Is(err, client.ErrNotFound), errors.Is(err, client.ErrObjectTooLarge):
 		return outcome{kind: failed, err: &Error{Code: CodeInvalid, Message: "the branch cannot land on the ref"}}
 	case errors.Is(err, client.ErrLandStale):
 		return outcome{kind: retry, retryCode: CodeStale}

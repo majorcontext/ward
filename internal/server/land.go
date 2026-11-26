@@ -76,8 +76,8 @@ func (s *Server) land(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	load()
-	if bodyErr != nil || req.Repo == "" || req.Branch == "" || !validCommit(req.Base) {
-		writeError(w, codeInvalidBody, "the body needs repo, branch and base, a 40-digit commit ID")
+	if bodyErr != nil || req.Repo == "" || req.Branch == "" || req.Base != "" && !validCommit(req.Base) {
+		writeError(w, codeInvalidBody, "the body needs repo and branch, and base is a 40-digit commit ID when it is set")
 		return
 	}
 	if req.Repo != c.Repo {

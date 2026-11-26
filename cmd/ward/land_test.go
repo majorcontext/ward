@@ -124,19 +124,52 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 	}
 }
 
-func TestLandRefusesABodyWithoutAValidBase(t *testing.T) {
+func TestLandFindsTheBaseItselfWithoutOneAndUsesTheBaseThatTheCallerSends(t *testing.T) {
 	h := newLandHarness(t)
+	warned := make(chan struct{}, 4)
+	hook := func(line string) {
+		if strings.Contains(line, "land without a base") {
+			warned <- struct{}{}
+		}
+	}
+	h.logHook.Store(&hook)
 	p := h.startWard(wardOpts{noMirror: true})
 	base := h.seedMain()
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
-	bare, _ := json.Marshal(map[string]string{"repo": h.repo, "branch": "feature/x"})
-	if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), bare, nil); code != http.StatusBadRequest {
-		t.Errorf("no base field: status = %d %s, want 400", code, body)
+	other := h.branchFrom(base, "feature/y", "d.txt", "d\n")
+	h.protectMain()
+	post := func(branch string, extra map[string]any) landState {
+		m := map[string]any{"repo": h.repo, "branch": branch}
+		for k, v := range extra {
+			m[k] = v
+		}
+		raw, _ := json.Marshal(m)
+		code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), raw, nil)
+		var l landState
+		if code != http.StatusAccepted || json.Unmarshal(body, &l) != nil {
+			t.Fatalf("post = %d %s", code, body)
+		}
+		return l
 	}
-	for name, base := range map[string]string{"empty": "", "short": "abc123", "upper case": strings.Repeat("A", 40)} {
-		if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/x", map[string]any{"base": base}), nil); code != http.StatusBadRequest {
+	for name, bad := range map[string]string{"short": "abc123", "upper case": strings.Repeat("A", 40)} {
+		raw, _ := json.Marshal(map[string]string{"repo": h.repo, "branch": "feature/x", "base": bad})
+		if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), raw, nil); code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d %s, want 400", name, code, body)
 		}
+	}
+
+	old := h.awaitLand(p, post("feature/x", nil).ID, "landed")
+	select {
+	case <-warned:
+	default:
+		t.Error("a land without a base logged no warning about the deprecated path")
+	}
+	if old.Error != nil || old.Tip == "" {
+		t.Fatalf("land without a base = %+v", old)
+	}
+	wrong := h.awaitLand(p, post("feature/y", map[string]any{"base": other}).ID, "failed")
+	if wrong.Error.Code != "land_invalid" {
+		t.Fatalf("land with a base that the range does not reach = %+v: the base of the caller must be used unchanged", wrong.Error)
 	}
 }
 

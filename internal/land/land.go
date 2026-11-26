@@ -224,7 +224,7 @@ func (s *Service) Repeat(ctx context.Context, req Request) (Land, bool, error) {
 	switch {
 	case err != nil || !ok:
 		return Land{}, false, err
-	case l.Repo != req.Repo || l.Ref != req.Ref || l.Branch != req.Branch || l.Base != req.Base || l.DeleteBranch != req.DeleteBranch:
+	case l.Repo != req.Repo || l.Ref != req.Ref || l.Branch != req.Branch || req.Base != "" && l.Base != req.Base || l.DeleteBranch != req.DeleteBranch:
 		return Land{}, true, ErrIDInUse
 	}
 	return l, true, nil
