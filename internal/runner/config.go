@@ -26,8 +26,8 @@ type Config struct {
 	SandboxKind string
 }
 
-// Load reads the configuration from getenv and builds the runner options. SandboxKind is gvisor, container or auto.
-// With auto the runner uses gVisor when runsc is on the path and a plain container otherwise.
+// Load reads the configuration from getenv and builds the runner options. SandboxKind is gvisor or container.
+// The setting auto means gvisor: the runner fails at start without runsc and never drops to a plain container.
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{}
 	if m := getenv("WARD_RUNNER_MODE"); m != "" && m != "pull" {

@@ -21,8 +21,8 @@ import (
 	"github.com/majorcontext/ward/internal/identity/usertoken"
 	"github.com/majorcontext/ward/internal/land"
 	"github.com/majorcontext/ward/internal/mirror"
-	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
 	"github.com/majorcontext/ward/internal/server"
+	statesqlite "github.com/majorcontext/ward/internal/state/sqlite"
 	"github.com/majorcontext/ward/internal/telemetry"
 	"github.com/majorcontext/ward/internal/token"
 )
@@ -113,7 +113,7 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 		return err
 	}
 	defer func() { _ = shutdownTraces(context.Background()) }()
-	store, err := mirrorsqlite.Open(ctx, cfg.StateFile)
+	store, err := statesqlite.Open(ctx, cfg.StateFile)
 	if err != nil {
 		return err
 	}
@@ -122,6 +122,10 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	var clock check.Clock
 	if opts.Clock != nil {
 		clock = opts.Clock
+	}
+	pruneClock := clock
+	if pruneClock == nil {
+		pruneClock = check.RealClock()
 	}
 	queue := pull.New(store, cfg.Runners, clock)
 	checks := check.New(store, cfg.Runners, queue.Wake, clock, opts.Logger)
@@ -169,6 +173,11 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 		}
 		errc <- srv.Serve(ln)
 	}()
+	pruneDone := make(chan struct{})
+	go func() {
+		defer close(pruneDone)
+		pruneLoop(ctx, store, pruneClock, opts.Logger)
+	}()
 	engineDone := make(chan struct{})
 	go func() {
 		defer close(engineDone)
@@ -185,8 +194,30 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	<-engineDone
+	<-pruneDone
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+const (
+	pruneEvery  = time.Hour
+	pruneKeepAt = 30 * 24 * time.Hour
+)
+
+// pruneLoop deletes the state that ended more than pruneKeepAt ago, once at the start and then every pruneEvery.
+func pruneLoop(ctx context.Context, store *statesqlite.Store, clock check.Clock, log *slog.Logger) {
+	for {
+		if n, err := store.Prune(ctx, clock.Now().Add(-pruneKeepAt)); err != nil && ctx.Err() == nil && log != nil {
+			log.Error("state prune failed", "error", err.Error())
+		} else if n > 0 && log != nil {
+			log.Info("state pruned", "rows", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-clock.After(pruneEvery):
+		}
+	}
 }

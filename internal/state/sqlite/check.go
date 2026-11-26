@@ -138,7 +138,7 @@ func (s *Store) Supersede(ctx context.Context, old string, next check.Request, n
 		if until > 0 {
 			return &check.LeasedError{Until: fromMicro(until)}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET open = 0 WHERE id = ?`, old); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET open = 0, closed_at = ? WHERE id = ?`, micro(now), old); err != nil {
 			return err
 		}
 		done = true
@@ -160,11 +160,11 @@ func (s *Store) AddResult(ctx context.Context, r check.Result) (bool, error) {
 			return nil
 		}
 		added = true
-		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET open = 0 WHERE id = ?`, r.RequestID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET open = 0, closed_at = ? WHERE id = ?`, micro(s.now()), r.RequestID); err != nil {
 			return err
 		}
 		if r.Status == check.StatusPass {
-			_, err = tx.ExecContext(ctx, `UPDATE check_requests SET open = 0 WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ?`, r.Repo, r.Tree, r.Hash, r.Env)
+			_, err = tx.ExecContext(ctx, `UPDATE check_requests SET open = 0, closed_at = ? WHERE open = 1 AND repo = ? AND tree = ? AND check_hash = ? AND env = ?`, micro(s.now()), r.Repo, r.Tree, r.Hash, r.Env)
 		}
 		return err
 	})

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/check"
-	"github.com/majorcontext/ward/internal/mirror/sqlite"
+	"github.com/majorcontext/ward/internal/state/sqlite"
 )
 
 // stepClock is a clock that a test moves.

@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/majorcontext/ward/internal/check"
-	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
+	statesqlite "github.com/majorcontext/ward/internal/state/sqlite"
 )
 
 func TestLandWaitsForAPassAndThenLandsTheCheckedTree(t *testing.T) {
@@ -373,7 +373,7 @@ func TestLandResumesCheckingWithItsStoredMarkSoAFailBeforeTheRestartEndsIt(t *te
 	req := run.next()
 	h.awaitLand(p, l.ID, "checking")
 	p.stop()
-	st, err := mirrorsqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
+	st, err := statesqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

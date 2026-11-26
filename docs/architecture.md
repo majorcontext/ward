@@ -30,7 +30,7 @@ Non-goals:
 | `internal/dispatch/pull` | The lease queue of the runners (see Dispatch). `internal/runner/install` is `ward runner install` (see Runner host). | W6 |
 | `internal/gitremote` | The seam `gitremote.Remote` (list the refs of a git remote and push refs to it), with the implementations `gitbin` (the git binary) and `fakeremote` (memory), and its suite `remotetest` (see Git access). | W2 |
 | `internal/gitcred` | The seam `gitcred.Credential` (the password of a git remote for one run), with the implementations `passwordfile` and `forgeapp` (the GitHub App exchange of GitHub App credential), and its suite `credtest`. | W2 |
-| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/mirror/sqlite` is its state store. | W2, W3, W4 |
+| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/state/sqlite` holds the state of ward (see State store). | W2, W3, W4 |
 | `internal/telemetry` | OTLP export of traces and metrics. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
 | `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
@@ -90,7 +90,7 @@ The key of `WARD_MOTTE_KEY_FILE` must be a trusted key of motte (`MOTTE_TRUSTED_
 
 `GET /health` answers 200. `GET /ready` answers 200 while the state store answers a ping. `GET /metrics` serves Prometheus metrics. These routes need no token. A path or method that no route serves answers 404 `not_found` or 405 `method_not_allowed` in the error envelope.
 
-The state store keeps the mirror state (see Mirror, State). It is a transactional store behind the interface `mirror.Store`. The backend is SQLite, through a pure-Go driver, so the binary needs no cgo. It runs in WAL mode on one connection, and each write is one transaction. `WARD_STATE_FILE` should name a durable path: the clone cache may be lost, but the state should not be. When no mirror is configured, `/v1/mirrors` lists none and the hook routes answer 404 `not_found`.
+The state store keeps all the state of ward: the mirror state (see Mirror, State), the check requests, results and leases, the lands and the user tokens. It is a transactional store behind the interfaces `mirror.Store`, `check.Store`, `land.Store` and `usertoken.Store`. The backend is SQLite, through a pure-Go driver, so the binary needs no cgo. It runs in WAL mode with `synchronous` FULL on one connection, and each write is one transaction. The table `schema_migrations` lists the versions that the file has applied. `Open` applies each migration that the file lacks, in one transaction for each, so a file that an earlier release made opens and migrates in place; it refuses a file that has a version that the release does not know. The first migration creates every table and an index on `check_requests (open)`. A land that ended and a check request that closed carry the time of that event. `Prune(before)` deletes the lands that ended and the check requests that closed before `before`, and the leases that expired before `before` and belong to no open request. The server runs it every hour with `before` set to 30 days ago. A row that existed when a file migrated to version 2 counts as ended at that time. `WARD_STATE_FILE` should name a durable path: the clone cache may be lost, but the state should not be. When no mirror is configured, `/v1/mirrors` lists none and the hook routes answer 404 `not_found`.
 
 ## Caller token
 
@@ -504,12 +504,12 @@ Every external provider sits behind an interface that its consumer owns. A provi
 | Seam | Interface | Suite | Implementations | Gap |
 |---|---|---|---|---|
 | identity | `internal/identity.Authenticator` | `internal/identity/identitytest.Run` | `internal/identity/bearer`, `internal/identity/oidc`, `internal/identity/usertoken` | |
-| user-token-store | `internal/identity/usertoken.Store` | `internal/usertokentest.Run` | `internal/mirror/sqlite`, `internal/usertokentest` | |
-| check-store | `internal/check.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
-| land-store | `internal/land.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
+| user-token-store | `internal/identity/usertoken.Store` | `internal/usertokentest.Run` | `internal/state/sqlite`, `internal/usertokentest` | |
+| check-store | `internal/check.Store` | none — no suite exists yet | `internal/state/sqlite` | One implementation and no suite. |
+| land-store | `internal/land.Store` | none — no suite exists yet | `internal/state/sqlite` | One implementation and no suite. |
 | runner-sandbox | `internal/runner/sandbox.Sandbox` | `internal/runner/sandbox/sandboxtest.Run` | `internal/runner/sandbox/container`, `internal/runner/sandbox/gvisor`, `internal/runner/sandbox/fake` | |
 | runner-host | none — a contract of the machine | none — no code interface | none | Contract: a Linux host with a container engine, `runsc` and `/dev/kvm`, local disk, and outbound HTTPS to ward (see Runner host). |
-| mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/mirror/sqlite` | One implementation and no suite. |
+| mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/state/sqlite` | One implementation and no suite. |
 | mirror-remote | `internal/gitremote.Remote` | `internal/gitremote/remotetest.Run` | `internal/gitremote/gitbin`, `internal/gitremote/fakeremote` | |
 | mirror-remote-credential | `internal/gitcred.Credential` | `internal/gitcred/credtest.Run` | `internal/gitcred/passwordfile`, `internal/gitcred/forgeapp` | |
 

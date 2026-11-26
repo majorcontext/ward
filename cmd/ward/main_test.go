@@ -16,7 +16,7 @@ import (
 	metasqlite "github.com/majorcontext/motte/meta/sqlite"
 	"github.com/majorcontext/motte/testserver"
 
-	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
+	statesqlite "github.com/majorcontext/ward/internal/state/sqlite"
 )
 
 // askpassBin answers git like the ward binary does, but starts at once: compiling ward for a test costs more than the tests.
@@ -118,7 +118,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	stateDB, err := mirrorsqlite.Open(context.Background(), filepath.Join(dir, "state.tmpl"))
+	stateDB, err := statesqlite.Open(context.Background(), filepath.Join(dir, "state.tmpl"))
 	if err != nil || stateDB.Close() != nil {
 		fmt.Fprintln(os.Stderr, "migrate the state template", err)
 		os.Exit(1)

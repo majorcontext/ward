@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/majorcontext/ward/internal/mirror"
-	mirrorsqlite "github.com/majorcontext/ward/internal/mirror/sqlite"
+	statesqlite "github.com/majorcontext/ward/internal/state/sqlite"
 )
 
 // fillRemote gives the remote main with n commits, a branch and an annotated tag, and returns the tip of main.
@@ -257,7 +257,7 @@ func TestStartDeletesOnlyTheNonMirrorableRefsThatAnEarlierSeedWrote(t *testing.T
 	h.skip()
 	c := h.gitCommit("a.txt", "1")
 	h.git("push", "-q", "origin", c+":refs/pull/1/head", c+":refs/pull/2/head")
-	store, err := mirrorsqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
+	store, err := statesqlite.Open(t.Context(), filepath.Join(h.dataDir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

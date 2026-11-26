@@ -9,7 +9,7 @@ import (
 
 	"github.com/majorcontext/ward/internal/check"
 	"github.com/majorcontext/ward/internal/dispatch/pull"
-	"github.com/majorcontext/ward/internal/mirror/sqlite"
+	"github.com/majorcontext/ward/internal/state/sqlite"
 	"github.com/majorcontext/ward/runnerproto"
 )
 

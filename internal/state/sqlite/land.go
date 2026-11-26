@@ -70,7 +70,8 @@ func (s *Store) SaveLand(ctx context.Context, l land.Land) error {
 	if err != nil {
 		return err
 	}
-	return s.exec(ctx, `UPDATE lands SET ended = ?, body = ? WHERE id = ?`, l.State.Ended(), string(raw), l.ID)
+	return s.exec(ctx, `UPDATE lands SET ended = ?, ended_at = CASE WHEN ended = 0 AND ? = 1 THEN ? ELSE ended_at END, body = ? WHERE id = ?`,
+		l.State.Ended(), l.State.Ended(), micro(s.now()), string(raw), l.ID)
 }
 
 func (s *Store) UnfinishedKeys(ctx context.Context) ([]land.Key, error) {

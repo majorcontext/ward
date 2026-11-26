@@ -16,53 +16,37 @@ import (
 	"github.com/majorcontext/ward/internal/mirror"
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS service (
-	id INTEGER PRIMARY KEY CHECK (id = 1),
-	subscription_id TEXT NOT NULL,
-	events_cursor TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS partitions (partition INTEGER PRIMARY KEY, last_seq INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS mirrors (name TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS seeds (mirror TEXT PRIMARY KEY, state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS seed_refs (mirror TEXT NOT NULL, ref TEXT NOT NULL, commit_sha TEXT NOT NULL, next TEXT NOT NULL, PRIMARY KEY (mirror, ref));
-CREATE TABLE IF NOT EXISTS seed_cleanups (mirror TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS refs (
-	mirror TEXT NOT NULL,
-	ref TEXT NOT NULL,
-	last_partition INTEGER NOT NULL DEFAULT -1,
-	last_seq INTEGER NOT NULL DEFAULT 0,
-	dirty INTEGER NOT NULL DEFAULT 0,
-	version INTEGER NOT NULL DEFAULT 0,
-	dirty_since INTEGER NOT NULL DEFAULT 0,
-	pushed TEXT,
-	attempts INTEGER NOT NULL DEFAULT 0,
-	next_attempt INTEGER NOT NULL DEFAULT 0,
-	failure TEXT NOT NULL DEFAULT '',
-	message TEXT NOT NULL DEFAULT '',
-	failure_since INTEGER NOT NULL DEFAULT 0,
-	pushed_at INTEGER NOT NULL DEFAULT 0,
-	PRIMARY KEY (mirror, ref)
-);`
+// Store is the state of ward on one SQLite file: the mirror, the check requests and results, the lands and the user tokens.
+type Store struct {
+	db  *sql.DB
+	now func() time.Time
+}
 
-// Store is a mirror.Store on one SQLite file.
-type Store struct{ db *sql.DB }
+// Option changes how Open builds a Store.
+type Option func(*Store)
+
+// WithClock sets the clock that stamps the end of a land and the close of a check request. The default is the wall clock.
+func WithClock(now func() time.Time) Option { return func(s *Store) { s.now = now } }
 
 var _ mirror.Store = (*Store)(nil)
 
-// Open opens the database at path and creates the tables.
-func Open(ctx context.Context, path string) (*Store, error) {
-	q := url.Values{"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(NORMAL)"}, "_txlock": {"immediate"}}
+// Open opens the database at path and applies the migrations that it has not seen.
+func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
+	q := url.Values{"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(FULL)"}, "_txlock": {"immediate"}}
 	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, schema+checkSchema+landSchema+userTokenSchema); err != nil {
+	s := &Store{db: db, now: time.Now}
+	for _, o := range opts {
+		o(s)
+	}
+	if err := migrate(ctx, db, s.now()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	return s, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -436,4 +420,27 @@ func (s *Store) Stats(ctx context.Context) ([]mirror.Stats, error) {
 		return rows.Err()
 	})
 	return out, err
+}
+
+// Prune deletes the lands that ended and the check requests that closed before the time before, and the leases that
+// expired before it and belong to no open request. A lease of an open request stays, because Leased and RenewLease read
+// it. It returns the number of rows deleted.
+func (s *Store) Prune(ctx context.Context, before time.Time) (int64, error) {
+	var total int64
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		for _, q := range []string{
+			`DELETE FROM check_requests WHERE open = 0 AND closed_at < ?`,
+			`DELETE FROM check_leases WHERE until < ? AND NOT EXISTS (SELECT 1 FROM check_requests r WHERE r.id = request_id AND r.open = 1)`,
+			`DELETE FROM lands WHERE ended = 1 AND ended_at < ?`,
+		} {
+			res, err := tx.ExecContext(ctx, q, micro(before))
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			total += n
+		}
+		return nil
+	})
+	return total, err
 }
