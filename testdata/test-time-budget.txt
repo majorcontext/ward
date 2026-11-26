@@ -6,11 +6,12 @@
 # A test with subtests is not checked, because a parallel parent reports the time of the whole package.
 # A change that makes a test or package slower raises its number in the same diff and states why.
 
-# testtime multiplies every time limit by max(1, measured / calibrate). 5 is above any runner, so the factor stays 1 and the limits stay
-# fixed. Replace it with the calibration time that the CI job prints on its reference runner to turn the scaling on.
-calibrate 5
+# testtime multiplies every time limit by max(1, measured / calibrate). calibrate is the calibration time of the CI reference runner.
+calibrate 0.055
+# The check of the seams table runs git twice: it reads the gap file at the merge base.
+count internal/seamcheck processes 2
 leaf 10
 package default 10
 # The container and gvisor suites start a container for each case and pull the test image once. A run of the two takes a few seconds with a warm image.
-package github.com/majorcontext/ward/internal/runner/sandbox/container 40
-package github.com/majorcontext/ward/internal/runner/sandbox/gvisor 40
+package internal/runner/sandbox/container 40
+package internal/runner/sandbox/gvisor 40
