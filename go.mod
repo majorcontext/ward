@@ -6,6 +6,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/majorcontext/motte v0.18.1-0.20261126195137-369627717587
+	github.com/majorcontext/tools v0.1.1-0.20261126195513-3703b0e36fb9
 	github.com/prometheus/client_golang v1.25.0
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	go.opentelemetry.io/contrib/bridges/prometheus v0.72.0
@@ -38,7 +39,6 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
-	github.com/majorcontext/tools v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
