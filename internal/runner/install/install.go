@@ -15,7 +15,6 @@ import (
 	"text/template"
 
 	"github.com/majorcontext/ward/internal/config"
-	"github.com/majorcontext/ward/internal/runner/warm"
 )
 
 // Options say how the runner is set up. WardURL, Kid, MotteURL, GrantFile and Image are required.
@@ -30,7 +29,6 @@ type Options struct {
 	Sandbox     string
 	CacheDir    string
 	WorkDir     string
-	CheckoutDir string
 	User        string
 	Concurrency int
 	// Binary is the path of the ward binary that the unit runs.
@@ -46,8 +44,6 @@ type Host struct {
 	FSType     func(path string) (string, error)
 	LookupUser func(name string) (uid, gid int, err error)
 	HasSystemd func() bool
-	// GitVersion returns the output of git --version.
-	GitVersion func() (string, error)
 }
 
 // notLocalDisk are the file systems that a durable cache must not live on: a network hit is slower than a build, and tmpfs
@@ -72,12 +68,11 @@ func (o *Options) fill() error {
 	def(&o.KeyFile, "/etc/ward-runner/check-key")
 	def(&o.CacheDir, "/var/lib/ward-runner/cache")
 	def(&o.WorkDir, "/var/lib/ward-runner/work")
-	def(&o.CheckoutDir, "/var/lib/ward-runner/checkouts")
 	def(&o.Binary, "/usr/local/bin/ward")
 	if o.Concurrency < 1 {
 		o.Concurrency = 1
 	}
-	for _, v := range []string{o.WardURL, o.Kid, o.KeyFile, o.MotteURL, o.GrantFile, o.Image, o.Engine, o.Sandbox, o.CacheDir, o.WorkDir, o.CheckoutDir, o.User, o.Binary} {
+	for _, v := range []string{o.WardURL, o.Kid, o.KeyFile, o.MotteURL, o.GrantFile, o.Image, o.Engine, o.Sandbox, o.CacheDir, o.WorkDir, o.User, o.Binary} {
 		if strings.ContainsAny(v, " \t\r\n\"'\\") {
 			return fmt.Errorf("value %q holds a space, a quote or a backslash", v)
 		}
@@ -106,15 +101,6 @@ func Run(o Options, h Host, out io.Writer) (missing []string, err error) {
 		miss("runsc (gVisor) is not on the path; register it as a runtime of the engine")
 	} else {
 		ok("runsc %s", p)
-	}
-	if p, err := h.LookPath("git"); err != nil {
-		miss("git is not on the path; the runner needs it for the warm checkouts")
-	} else if out, err := h.GitVersion(); err != nil {
-		miss("git --version failed: %v", err)
-	} else if err := warm.CheckGitVersion(out); err != nil {
-		miss("%v", err)
-	} else {
-		ok("git %s", p)
 	}
 	if err := h.KVM(o.User); err != nil {
 		miss("the KVM platform of runsc: %v", err)
@@ -153,7 +139,7 @@ func Run(o Options, h Host, out io.Writer) (missing []string, err error) {
 func (o Options) path(p string) string { return filepath.Join(o.Root, p) }
 
 func prepareDirs(o Options, h Host, uid, gid int, chown bool, miss func(string, ...any), ok func(string, ...any)) error {
-	for _, d := range []string{o.CacheDir, o.WorkDir, o.CheckoutDir} {
+	for _, d := range []string{o.CacheDir, o.WorkDir} {
 		dir := filepath.Join(o.Root, d)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
@@ -165,7 +151,7 @@ func prepareDirs(o Options, h Host, uid, gid int, chown bool, miss func(string, 
 			_ = os.Chown(dir, uid, gid)
 		}
 	}
-	for _, d := range []string{o.CacheDir, o.WorkDir, o.CheckoutDir} {
+	for _, d := range []string{o.CacheDir, o.WorkDir} {
 		fs, err := h.FSType(filepath.Join(o.Root, d))
 		switch {
 		case err != nil:
@@ -222,7 +208,6 @@ WARD_RUNNER_SANDBOX={{.Sandbox}}
 WARD_RUNNER_CONCURRENCY={{.Concurrency}}
 WARD_RUNNER_WORK_DIR={{.WorkDir}}
 WARD_RUNNER_CACHE_DIR={{.CacheDir}}
-WARD_RUNNER_CHECKOUT_DIR={{.CheckoutDir}}
 `
 
 const unitText = `[Unit]

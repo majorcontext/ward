@@ -24,8 +24,6 @@ import (
 type Config struct {
 	Options     Options
 	SandboxKind string
-	// Checkouts is the setting of the warm checkouts, or nil when WARD_RUNNER_CHECKOUT_DIR is unset.
-	Checkouts *CheckoutConfig
 }
 
 // Load reads the configuration from getenv and builds the runner options. SandboxKind is gvisor, container or auto.
@@ -98,9 +96,6 @@ func Load(getenv func(string) string) (Config, error) {
 		if c.Options.CacheDir, err = filepath.Abs(v); err != nil {
 			return c, fmt.Errorf("WARD_RUNNER_CACHE_DIR: %w", err)
 		}
-	}
-	if c.Checkouts, err = loadCheckouts(getenv, work, grantFile); err != nil {
-		return c, err
 	}
 	return c, nil
 }

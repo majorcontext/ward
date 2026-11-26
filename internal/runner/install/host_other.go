@@ -17,9 +17,5 @@ func SystemHost() Host {
 		FSType:     func(string) (string, error) { return "", errNotLinux },
 		LookupUser: func(string) (int, int, error) { return 0, 0, errNotLinux },
 		HasSystemd: func() bool { return false },
-		GitVersion: func() (string, error) {
-			out, err := exec.Command("git", "--version").Output()
-			return string(out), err
-		},
 	}
 }

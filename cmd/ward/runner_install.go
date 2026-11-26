@@ -23,7 +23,6 @@ func runRunnerInstall(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.Sandbox, "sandbox", "", "gvisor, container or auto (default gvisor)")
 	fs.StringVar(&o.CacheDir, "cache-dir", "", "durable cache directory on local disk")
 	fs.StringVar(&o.WorkDir, "work-dir", "", "directory of the tree checkouts")
-	fs.StringVar(&o.CheckoutDir, "checkout-dir", "", "directory of the bare clones (default /var/lib/ward-runner/checkouts)")
 	fs.StringVar(&o.User, "user", "", "service user (default ward-runner)")
 	fs.StringVar(&o.Binary, "binary", "", "path of the ward binary (default /usr/local/bin/ward)")
 	fs.StringVar(&o.Root, "root", "", "prefix for every written path (default /)")

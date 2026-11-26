@@ -33,12 +33,6 @@ func host(missing ...string) install.Host {
 		},
 		LookupUser: func(string) (int, int, error) { return os.Getuid(), os.Getgid(), err("user") },
 		HasSystemd: func() bool { return !gone["systemd"] },
-		GitVersion: func() (string, error) {
-			if gone["oldgit"] {
-				return "git version 2.30.2", nil
-			}
-			return "git version 2.43.0", nil
-		},
 	}
 }
 
@@ -55,7 +49,7 @@ func TestInstallWritesTheUnitAndNamesWhatTheHostLacks(t *testing.T) {
 	}
 	env, _ := os.ReadFile(filepath.Join(root, "etc/ward-runner/runner.env"))
 	unit, _ := os.ReadFile(filepath.Join(root, "etc/systemd/system/ward-runner.service"))
-	for _, want := range []string{"WARD_RUNNER_MODE=pull", "WARD_RUNNER_KID=metal-1", "WARD_RUNNER_SANDBOX=gvisor", "WARD_RUNNER_CACHE_DIR=/var/lib/ward-runner/cache", "WARD_RUNNER_CHECKOUT_DIR=/var/lib/ward-runner/checkouts"} {
+	for _, want := range []string{"WARD_RUNNER_MODE=pull", "WARD_RUNNER_KID=metal-1", "WARD_RUNNER_SANDBOX=gvisor", "WARD_RUNNER_CACHE_DIR=/var/lib/ward-runner/cache"} {
 		if !strings.Contains(string(env), want) {
 			t.Errorf("env file lacks %s:\n%s", want, env)
 		}
@@ -69,14 +63,9 @@ func TestInstallWritesTheUnitAndNamesWhatTheHostLacks(t *testing.T) {
 
 	opts.GrantFile = filepath.Join(root, "no-grant")
 	out.Reset()
-	missing, err = install.Run(opts, host("docker", "runsc", "git", "kvm", "disk", "user", "systemd"), &out)
-	if err != nil || len(missing) != 10 {
+	missing, err = install.Run(opts, host("docker", "runsc", "kvm", "disk", "user", "systemd"), &out)
+	if err != nil || len(missing) != 8 {
 		t.Errorf("empty host: %d missing, error %v:\n%s", len(missing), err, out.String())
 	}
 
-	opts.GrantFile = grant
-	out.Reset()
-	if missing, err = install.Run(opts, host("oldgit"), &out); err != nil || len(missing) != 1 || !strings.Contains(missing[0], "2.31") {
-		t.Errorf("old git: missing %v, error %v", missing, err)
-	}
 }
