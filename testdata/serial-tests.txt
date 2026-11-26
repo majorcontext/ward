@@ -1,0 +1,4 @@
+# Tests that cannot run in parallel, one "package TestName reason" per line; package is the import path below the module path.
+internal/mirror TestMaybeAskpassAnswersUserThenCredential sets process environment variables with t.Setenv
+cmd/ward TestLocalCheckRunsInOrderExitsOnFailureAndUsesNoNetwork replaces the global http.DefaultTransport
+cmd/ward TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain replaces the package-global noRedirect.Transport

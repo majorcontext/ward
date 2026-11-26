@@ -33,7 +33,7 @@ Non-goals:
 | `internal/gitcred` | The seam `gitcred.Credential` (the password of a git remote for one run), with the implementations `passwordfile` and `forgeapp` (the GitHub App exchange of GitHub App credential), and its suite `credtest`. | W2 |
 | `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/state/sqlite` holds the state of ward (see State store). `internal/state/memory` is the in-memory store with the same interfaces. | W2, W3, W4 |
 | `internal/telemetry` | OTLP export of traces and metrics. | W2 |
-| `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
+| `majorcontext/tools` (`tool` directives of `go.mod`) | Repository tooling that ward shares with other repositories and runs with `go tool`: `leaklint` (denylist scan), `testtime` (test time budget, enforced in CI's reference environment, not in the land check) and `lint` (the analyzers `wallclock` and `paralleltests`). The files `testdata/test-time-budget.txt` and `testdata/serial-tests.txt` stay in this repository. | W1 |
 | `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
 | Change requests, review, merge queue, CI orchestration, import host | See Planned work. | Not built |
 

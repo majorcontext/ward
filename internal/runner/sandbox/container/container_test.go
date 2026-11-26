@@ -29,6 +29,7 @@ func engine(t *testing.T) string {
 }
 
 func TestConformance(t *testing.T) {
+	t.Parallel()
 	e := engine(t)
 	image := os.Getenv("WARD_TEST_IMAGE")
 	if image == "" {

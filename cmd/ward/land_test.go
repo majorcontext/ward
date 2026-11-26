@@ -304,6 +304,7 @@ func TestLandAcceptsAnOIDCIdentityOnItsRepositoryOnly(t *testing.T) {
 }
 
 func TestLandSendsTheAccessTokenInTheHeaderOfAProxyAndNoBearer(t *testing.T) {
+	t.Parallel()
 	iss := identitytest.NewIssuer(t, "k1")
 	jwt := iss.Sign(t, map[string]any{"iss": "https://idp.example.test", "aud": "aud1", "email": "dev@dev.test", "email_verified": true, "exp": time.Now().Add(time.Hour).Unix()})
 	for header, env := range map[string]map[string]string{"cf-access-token": {}, "X-Edge-Jwt": {"WARD_ACCESS_HEADER": "X-Edge-Jwt"}} {

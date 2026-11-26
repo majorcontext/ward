@@ -10,6 +10,7 @@ import (
 )
 
 func TestMatchesAndGitRef(t *testing.T) {
+	t.Parallel()
 	e := mirror.Entry{Refs: []string{"main", "release/*", "refs/tags/*"}}
 	all := mirror.Entry{Refs: []string{"*"}}
 	tests := []struct {
@@ -47,6 +48,7 @@ func TestMatchesAndGitRef(t *testing.T) {
 }
 
 func TestParseEntries(t *testing.T) {
+	t.Parallel()
 	cred := filepath.Join(t.TempDir(), "cred")
 	if err := os.WriteFile(cred, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)

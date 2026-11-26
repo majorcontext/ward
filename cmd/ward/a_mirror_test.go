@@ -389,6 +389,7 @@ func TestMirrorBacksOffOnTheInjectedClockAndTakesNewsAtOnce(t *testing.T) {
 }
 
 func TestMirrorPrunesUnknownRemoteRefsOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	for _, prune := range []bool{false, true} {
 		t.Run(fmt.Sprint("prune_unknown=", prune), func(t *testing.T) {
 			h := newHarness(t)
@@ -414,6 +415,7 @@ func TestMirrorPrunesUnknownRemoteRefsOnlyWhenAsked(t *testing.T) {
 }
 
 func TestMirrorDeletesIdleAndOverBudgetClonesAndFetchesAgain(t *testing.T) {
+	t.Parallel()
 	for name, o := range map[string]wardOpts{"idle ttl": {ttl: "1ns"}, "disk budget": {budget: "1"}} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)

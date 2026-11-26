@@ -7,6 +7,7 @@ import (
 )
 
 func TestParentWhoseSubtestsAllSkipIsNotALeaf(t *testing.T) {
+	t.Parallel()
 	stream := strings.Join([]string{
 		`{"Action":"skip","Package":"example.com/p","Test":"TestA/one","Elapsed":0}`,
 		`{"Action":"skip","Package":"example.com/p","Test":"TestA/two","Elapsed":0}`,
@@ -22,6 +23,7 @@ func TestParentWhoseSubtestsAllSkipIsNotALeaf(t *testing.T) {
 }
 
 func TestPackageFailurePrintsTheOutputOfARunningTest(t *testing.T) {
+	t.Parallel()
 	stream := strings.Join([]string{
 		`{"Action":"output","Package":"example.com/p","Test":"TestHang","Output":"panic: test timed out\n"}`,
 		`{"Action":"fail","Package":"example.com/p","Elapsed":600}`,
