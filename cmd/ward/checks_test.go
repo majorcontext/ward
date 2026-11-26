@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -468,16 +469,33 @@ func (h *harness) queueBehindACheck(p *wardProc, run *fakeRunner, base string, n
 
 func TestLandsQueuedBehindACheckLandTogetherOnOneCheckRun(t *testing.T) {
 	h, run := newLandHarness(t), newRunner(t)
-	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	clk := newFakeClock(func() { h.note("timer", "") })
+	p := h.startWard(wardOpts{noMirror: true, proxied: true, runner: run, clock: clk})
 	base := h.seedChecked(unitChecks)
 	first, req, queued := h.queueBehindACheck(p, run, base, "b", "c")
 	p.answer(req, "pass", "ok")
 	h.awaitLand(p, first.ID, "landed")
 
 	batch := run.next()
+	h.landTimeouts.Store(8)
 	p.answer(batch, "pass", "ok")
+	for range 8 {
+		h.waitFor("the pause before the repeat", func() bool { return clk.hasTimer(2 * time.Second) })
+		clk.advance(2 * time.Second)
+	}
 	b, c := h.awaitLand(p, queued[0].ID, "landed"), h.awaitLand(p, queued[1].ID, "landed")
 	h.git("fetch", "-q", "origin", "main")
+	h.mu.Lock()
+	var sent []string
+	for _, b := range h.landBodies {
+		if strings.Contains(b, `-b1"`) {
+			sent = append(sent, b)
+		}
+	}
+	h.mu.Unlock()
+	if len(slices.Compact(slices.Clone(sent))) != 1 || len(sent) != 9 {
+		t.Fatalf("batch land calls = %q: every repeat must carry the same id and values", sent)
+	}
 	if len(run.reqs) != 0 || h.treeOf(h.mainTip()) != batch.Tree || c.Tip != h.mainTip() || b.Tip == c.Tip || b.Generation != c.Generation ||
 		h.git("show", "FETCH_HEAD:b.txt") != "b" || h.git("show", "FETCH_HEAD:c.txt") != "c" {
 		t.Fatalf("b = %+v, c = %+v, %d extra requests, main tree %s, checked tree %s", b, c, len(run.reqs), h.treeOf(h.mainTip()), batch.Tree)

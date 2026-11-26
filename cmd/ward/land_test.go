@@ -225,6 +225,26 @@ func TestLandRepeatsItsCallAfterARestartAndAcceptsTheFirstResult(t *testing.T) {
 	}
 }
 
+func TestLandRepeatsTheSameCallWhenMotteAnswersWithATimeoutAfterItLanded(t *testing.T) {
+	h := newLandHarness(t)
+	clk := newFakeClock(func() { h.note("timer", "") })
+	p := h.startWard(wardOpts{noMirror: true, proxied: true, clock: clk})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	h.landTimeouts.Store(8)
+	l := h.postLand(p, "main", "feature/x", nil)
+	for range 8 {
+		h.waitFor("the pause before the repeat", func() bool { return clk.hasTimer(2 * time.Second) })
+		clk.advance(2 * time.Second)
+	}
+	h.awaitLand(p, l.ID, "landed")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(slices.Compact(slices.Clone(h.landBodies))) != 1 || !strings.Contains(h.landBodies[0], `"id":"`+l.ID+`-1"`) {
+		t.Fatalf("land calls = %q: every repeat must carry the same id and values", h.landBodies)
+	}
+}
+
 // coldLand sets up a land that needs the merge base walk, and delays the first object reads of motte.
 func (h *harness) coldLand(budget time.Duration, reads int64, delay time.Duration) (*wardProc, landState) {
 	h.t.Helper()

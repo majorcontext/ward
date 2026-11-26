@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -34,7 +38,8 @@ type outcome struct {
 	kind      kind
 	err       *Error
 	retryCode string
-	// keepCall makes the retry repeat the stored land call, because motte may have done it.
+	// keepCall marks a land call that ended with no definite answer of motte. The retry repeats the stored call with the same
+	// id, because motte may have done it, and it does not count toward maxRetries.
 	keepCall  bool
 	storeErr  error
 	landed    api.LandResponse
@@ -48,14 +53,18 @@ func candidateRef(id string) string { return "refs/ward/candidates/" + id }
 func (s *Service) run(ctx context.Context, l Land) (bool, error) {
 	for {
 		out := s.attempt(ctx, &l)
+		if out.kind == retry && out.keepCall {
+			if !s.pause(ctx) {
+				return false, nil
+			}
+			continue
+		}
 		if out.kind == retry {
 			if l.Retries >= maxRetries {
 				out = outcome{kind: failed, err: &Error{Code: out.retryCode, Message: "the ref kept moving or motte kept timing out"}}
 			} else {
 				l.Retries++
-				if !out.keepCall {
-					l.Call = nil
-				}
+				l.Call = nil
 				continue
 			}
 		}
@@ -64,6 +73,37 @@ func (s *Service) run(ctx context.Context, l Land) (bool, error) {
 		}
 		return out.kind == failed && out.err.Code == CodeCheckFailed, s.finish(&l, out)
 	}
+}
+
+// callPause is the time between two sends of the same land call that had no definite answer.
+const callPause = 2 * time.Second
+
+// pause waits callPause on the clock of the service. It returns false when the service stops first.
+func (s *Service) pause(ctx context.Context) bool {
+	select {
+	case <-s.clock.After(callPause):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// noAnswer reports whether err leaves open that motte did the land call: vcs_land_timeout, a passed deadline, a failure of
+// transport, or a 5xx answer. A local fault and any other 4xx answer are not in the class, so they end as internal_error.
+func noAnswer(err error) bool {
+	var wire *client.Error
+	if errors.Is(err, client.ErrLandTimeout) {
+		return true
+	}
+	if errors.As(err, &wire) {
+		return wire.Status >= 500
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	var opErr *net.OpError
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &opErr)
 }
 
 // attempt runs steps 1 to 5.
@@ -257,7 +297,7 @@ func (s *Service) send(ctx context.Context, merger *client.Client, l *Land) outc
 	ctx, end := span(ctx, "ward.land.send", attribute.Int("attempt", l.Attempt))
 	res, err := merger.Land(ctx, l.Repo, api.LandRequest{ID: fmt.Sprintf("%s-%d", l.ID, l.Attempt), Ref: l.Ref, Base: c.Base, Head: c.Head, ExpectTree: c.Tree})
 	end(err)
-	if errors.Is(err, context.DeadlineExceeded) && s.ctx.Err() == nil {
+	if err != nil && s.ctx.Err() == nil && noAnswer(err) {
 		return outcome{kind: retry, retryCode: CodeTimeout, keepCall: true}
 	}
 	if err != nil {

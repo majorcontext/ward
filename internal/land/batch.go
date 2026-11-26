@@ -294,8 +294,14 @@ func (s *Service) sendBatch(ctx context.Context, merger *client.Client, k Key, g
 			}
 		}
 		return nil
-	case errors.Is(err, context.DeadlineExceeded) && s.ctx.Err() == nil:
-		return s.settle(group, outcome{kind: retry, retryCode: CodeTimeout, keepCall: true})
+	case s.ctx.Err() == nil && noAnswer(err):
+		if err := s.settle(group, outcome{kind: retry, retryCode: CodeTimeout, keepCall: true}); err != nil {
+			return err
+		}
+		if !s.pause(ctx) {
+			return ctx.Err()
+		}
+		return nil
 	case errors.Is(err, client.ErrLandConflict):
 		return s.settle(group, outcome{kind: retry, retryCode: CodeStale})
 	case errors.Is(err, client.ErrLandInvalid) && len(group) > 1:
@@ -329,13 +335,13 @@ func (s *Service) settle(ls []*Land, out outcome) error {
 }
 
 func (s *Service) retryLand(l *Land, out outcome) error {
+	if out.keepCall {
+		return nil
+	}
 	if l.Retries >= maxRetries {
 		return s.finish(l, outcome{kind: failed, err: &Error{Code: out.retryCode, Message: "the ref kept moving or motte kept timing out"}})
 	}
 	l.Retries++
-	st := l.State
-	if !out.keepCall {
-		l.Call, st = nil, Queued
-	}
-	return s.save(l, st)
+	l.Call = nil
+	return s.save(l, Queued)
 }

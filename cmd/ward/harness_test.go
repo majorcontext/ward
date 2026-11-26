@@ -227,7 +227,8 @@ type harness struct {
 	motteGate  atomic.Pointer[gate]
 	// limitPushes makes the proxy answer 503 to a push of git once pushesLeft pushes passed.
 	// holdLand makes the proxy answer no land of main: it forwards the land, and keeps the reply until the caller leaves.
-	holdLand atomic.Bool
+	holdLand     atomic.Bool
+	landTimeouts atomic.Int64
 	// slowLeft object reads of motte wait slowFor in the proxy. A negative slowFor waits until the caller leaves.
 	slowLeft atomic.Int64
 	slowFor  atomic.Int64
@@ -805,6 +806,12 @@ func (h *harness) proxy() *httptest.Server {
 				h.mu.Lock()
 				h.landBodies = append(h.landBodies, string(body))
 				h.mu.Unlock()
+				if h.landTimeouts.Add(-1) >= 0 {
+					rp.ServeHTTP(httptest.NewRecorder(), r)
+					w.WriteHeader(http.StatusGatewayTimeout)
+					_, _ = io.WriteString(w, `{"error":{"code":"vcs_land_timeout","message":"slow","details":{}}}`)
+					return
+				}
 				if h.holdLand.Load() {
 					rp.ServeHTTP(httptest.NewRecorder(), r)
 					h.landRecord <- struct{}{}

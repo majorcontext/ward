@@ -3,10 +3,16 @@ package land
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/majorcontext/motte/client"
 )
 
 type queueStore struct {
@@ -40,4 +46,27 @@ func TestWorkerRetriesAStoreErrorWithBackoffAndSweepRestartsALostQueue(t *testin
 		cancel()
 		s.Wait()
 	})
+}
+
+func TestNoAnswerClass(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"land timeout", client.ErrLandTimeout, true},
+		{"deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), true},
+		{"eof", io.ErrUnexpectedEOF, true},
+		{"dial", &url.Error{Op: "Post", Err: &net.OpError{Op: "dial"}}, true},
+		{"url local", &url.Error{Op: "Post", Err: errors.New("unsupported scheme")}, false},
+		{"5xx", &client.Error{Status: 502}, true},
+		{"4xx", &client.Error{Status: 403}, false},
+		{"stale", fmt.Errorf("x: %w", client.ErrLandStale), false},
+		{"local", errors.New("disk full"), false},
+	} {
+		if got := noAnswer(c.err); got != c.want {
+			t.Errorf("%s: noAnswer = %v, want %v", c.name, got, c.want)
+		}
+	}
 }
