@@ -23,7 +23,7 @@ func (h *harness) checkLandSpans(l string) {
 	h.waitFor("the span of the run", func() bool {
 		for _, s := range landSpans.GetSpans() {
 			for _, kv := range s.Attributes {
-				if s.Name == "ward.land.run" && kv.Key == "land_id" && kv.Value.AsString() == l {
+				if s.Name == "ward.land.train" && kv.Key == "land_id" && kv.Value.AsString() == l {
 					return true
 				}
 			}
@@ -33,7 +33,7 @@ func (h *harness) checkLandSpans(l string) {
 	var run, runTrace string
 	for _, s := range landSpans.GetSpans() {
 		for _, kv := range s.Attributes {
-			if kv.Key == "land_id" && kv.Value.AsString() == l && s.Name == "ward.land.run" {
+			if kv.Key == "land_id" && kv.Value.AsString() == l && s.Name == "ward.land.train" {
 				run, runTrace = s.SpanContext.SpanID().String(), s.SpanContext.TraceID().String()
 			}
 		}
@@ -44,12 +44,12 @@ func (h *harness) checkLandSpans(l string) {
 			got[s.Name] = s.Parent.SpanID().String()
 		}
 	}
-	for _, name := range []string{"ward.serve POST /v1/lands", "ward.land.enqueue", "ward.land.run"} {
+	for _, name := range []string{"ward.serve POST /v1/lands", "ward.land.enqueue", "ward.land.train"} {
 		if _, ok := got[name]; !ok {
 			h.t.Errorf("no span %q", name)
 		}
 	}
-	for _, name := range []string{"ward.land.prepare", "ward.land.checks", "ward.land.send"} {
+	for _, name := range []string{"ward.land.trial", "ward.land.send"} {
 		if run == "" || got[name] != run {
 			h.t.Errorf("span %q has parent %q, want the run %q", name, got[name], run)
 		}

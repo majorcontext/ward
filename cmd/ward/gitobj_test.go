@@ -139,6 +139,26 @@ func (h *harness) commitOn(parent string, files map[string]string, msg string) s
 	return id
 }
 
+// chainOn uploads n commits of files, one on the other, on top of parent in one call, and returns the last.
+func (h *harness) chainOn(parent string, files map[string]string, n int) string {
+	h.t.Helper()
+	h.writer()
+	var put []client.Object
+	for range n {
+		h.hist.n++
+		objs := commitObjs(files, parent, "step", 1700000000+h.hist.n)
+		for _, o := range objs {
+			put = append(put, client.Object{Type: o.kind, Data: o.data})
+		}
+		parent = objs[len(objs)-1].id
+	}
+	if _, err := h.hist.node.PutObjects(h.t.Context(), put); err != nil {
+		h.t.Fatal(err)
+	}
+	h.hist.files[parent], h.hist.parent[parent] = files, parent
+	return parent
+}
+
 // with returns the files of commit and one more.
 func (h *harness) with(commit, file, content string) map[string]string {
 	files := map[string]string{file: content}

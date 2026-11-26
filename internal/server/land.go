@@ -178,6 +178,10 @@ func validLandID(id string) bool {
 }
 
 func (s *Server) landEnqueueError(w http.ResponseWriter, err error) {
+	if errors.Is(err, land.ErrRefused) {
+		writeError(w, codeLandInvalid, "the branch cannot land on the ref: motte refuses its change, for example a range of more than 1000 commits")
+		return
+	}
 	if errors.Is(err, land.ErrIDInUse) {
 		writeError(w, codeLandIDInUse, "the id belongs to another land")
 		return

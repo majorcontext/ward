@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/majorcontext/motte/api"
 	"github.com/majorcontext/motte/client"
 	"github.com/majorcontext/motte/grant"
 
@@ -32,9 +33,8 @@ const (
 	// DefaultReadBudget is the time limit of one read of motte. A replica that opens its packs on first use needs more than
 	// the 2 s default of the client. The limit stays below the 35 s that the client gives a land call.
 	DefaultReadBudget = 10 * time.Second
-	// DefaultBatchMax is the most lands that one check run judges when Config.BatchMax is zero.
-	DefaultBatchMax = 8
-	startBatch      = 2
+	// trainMax is the most lands that one trial land and one round of checks judge.
+	trainMax = 8
 	// sweepEvery is the time between two kicks of every queue that has lands.
 	sweepEvery = time.Minute
 	// storeBackoffMin and storeBackoffMax bound the wait before a worker retries a failed store operation.
@@ -66,8 +66,6 @@ type Config struct {
 	ReadBudget time.Duration
 	// Refs lists the ref patterns that a land may name: a stored ref name, or a prefix that ends in *. Nil means main only.
 	Refs []string
-	// BatchMax is the most lands that one check run judges. Zero means DefaultBatchMax, and 1 judges each land alone.
-	BatchMax int
 }
 
 // Request names the branch to land and where.
@@ -92,7 +90,6 @@ type Service struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	workers map[Key]chan struct{}
-	sizes   map[Key]int
 	changed chan struct{}
 	wg      sync.WaitGroup
 	// queued holds the time that each land of this process was accepted, for the span of its run.
@@ -121,7 +118,7 @@ func New(cfg Config, store Store, checks *check.Manager, clock check.Clock, log 
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Service{cfg: cfg, store: store, checks: checks, clock: clock, log: log, workers: map[Key]chan struct{}{}, sizes: map[Key]int{}, changed: make(chan struct{})}
+	return &Service{cfg: cfg, store: store, checks: checks, clock: clock, log: log, workers: map[Key]chan struct{}{}, changed: make(chan struct{})}
 }
 
 // Start resumes every land that has not ended. The queues stop when ctx ends.
@@ -200,6 +197,9 @@ func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
 	} else if l, ok, err := s.Repeat(ctx, req); ok || err != nil {
 		return l, err
 	}
+	if err := s.refuse(ctx, req); err != nil {
+		return Land{}, err
+	}
 	l := Land{ID: id, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, Base: req.Base, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
 	ctx, end := span(ctx, "ward.land.enqueue", attribute.String("land_id", l.ID))
 	s.queued.Store(l.ID, s.clock.Now())
@@ -216,6 +216,29 @@ func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
 	}
 	s.kick(Key{req.Repo, req.Ref})
 	return l, nil
+}
+
+// ErrRefused means that motte cannot land the change of a request on its own: the range is too large for one land, holds a
+// merge commit, or does not reach the base.
+var ErrRefused = errors.New("land: the change cannot land")
+
+// refuse asks motte for a trial land of the change alone, on the tip, and returns ErrRefused when motte refuses the change
+// itself. A conflict is not a refusal, because the ref moves. A failed read or trial refuses nothing: the train decides.
+func (s *Service) refuse(ctx context.Context, req Request) error {
+	reader, merger := s.client(grant.ScopeRead, req.Repo), s.client(grant.ScopeMerge, req.Repo)
+	tip, err := reader.Ref(ctx, req.Ref)
+	if err != nil {
+		return nil
+	}
+	branch, err := reader.Ref(ctx, req.Branch)
+	if err != nil {
+		return nil
+	}
+	res, err := merger.LandTrial(ctx, req.Repo, api.TrialRequest{Tip: tip.Commit, Changes: []api.TrialChange{{Head: branch.Commit, Base: req.Base}}})
+	if err != nil || len(res.Items) != 1 || res.Items[0].Error == nil || !refusedCode(res.Items[0].Error.Code) {
+		return nil
+	}
+	return ErrRefused
 }
 
 // Repeat returns the land that req.ID made when it exists and agrees with req.
@@ -323,7 +346,7 @@ func (s *Service) work(k Key, wake chan struct{}) {
 	defer s.wg.Done()
 	backoff := time.Duration(0)
 	for {
-		ls, err := s.store.NextLands(s.ctx, k, s.batchMax())
+		ls, err := s.store.NextLands(s.ctx, k, trainMax)
 		switch {
 		case err != nil:
 			if s.ctx.Err() == nil {
@@ -358,51 +381,19 @@ func (s *Service) work(k Key, wake chan struct{}) {
 	}
 }
 
-func (s *Service) batchMax() int { return cmp.Or(s.cfg.BatchMax, DefaultBatchMax) }
-
-// size returns the number of lands that the next check run of k may judge.
-func (s *Service) size(k Key) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return min(cmp.Or(s.sizes[k], startBatch), s.batchMax())
-}
-
-// adapt grows the batch of k by one after a pass and halves it after a failed check.
-func (s *Service) adapt(k Key, passed bool) {
-	n := s.size(k)
-	if passed {
-		n++
-	} else {
-		n /= 2
-	}
-	s.mu.Lock()
-	s.sizes[k] = min(max(n, 1), s.batchMax())
-	s.mu.Unlock()
-}
-
-// step runs the oldest lands of k, as many as the batch size allows, to their end or back to the queue.
+// step runs the oldest lands of k, as far as one pass takes them: the stored call of a land in the state landing, else one
+// train.
 func (s *Service) step(k Key, ls []Land) error {
-	if ls[0].Call != nil && ls[0].State == Landing && ls[0].Call.ID != "" {
-		ctx, end := span(s.ctx, "ward.land.batch", attribute.Int("size", len(ls)), attribute.Bool("resumed", true))
-		err := s.resumeBatch(ctx, k, ls)
+	if ls[0].State == Landing && ls[0].Call != nil {
+		ctx, end := span(s.ctx, "ward.land.resume", append(s.waited(ls[0]), attribute.String("land_id", ls[0].ID))...)
+		merger := s.client(grant.ScopeMerge, k.Repo)
+		err := s.conclude(&ls[0], s.send(ctx, merger, &ls[0]))
 		end(err)
 		return err
 	}
-	if ls[0].Call != nil && ls[0].State == Landing {
-		ls = ls[:1]
-	}
-	if ls = ls[:min(len(ls), s.size(k))]; len(ls) > 1 {
-		ctx, end := span(s.ctx, "ward.land.batch", append(s.waited(ls...), attribute.Int("size", len(ls)))...)
-		err := s.runBatch(ctx, k, ls)
-		end(err)
-		return err
-	}
-	ctx, end := span(s.ctx, "ward.land.run", append(s.waited(ls[0]), attribute.String("land_id", ls[0].ID))...)
-	checkFailed, err := s.run(ctx, ls[0])
-	end(err, attribute.Bool("check_failed", checkFailed))
-	if err == nil && s.ctx.Err() == nil {
-		s.adapt(k, !checkFailed)
-	}
+	ctx, end := span(s.ctx, "ward.land.train", append(s.waited(ls...), attribute.Int("size", len(ls)), attribute.String("land_id", ls[0].ID))...)
+	err := s.runTrain(ctx, k, ls)
+	end(err)
 	return err
 }
 

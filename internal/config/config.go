@@ -76,13 +76,6 @@ func Load(getenv func(string) string) (Config, error) {
 			c.Land.Refs = append(c.Land.Refs, p)
 		}
 	}
-	if v := getenv("WARD_LAND_BATCH_MAX"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
-			return c, errors.New("WARD_LAND_BATCH_MAX must be a positive number")
-		}
-		c.Land.BatchMax = n
-	}
 	if v := getenv("WARD_GITHUB_API_URL"); v != "" {
 		if u, err := url.Parse(v); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return c, errors.New("WARD_GITHUB_API_URL must be an http or https URL")

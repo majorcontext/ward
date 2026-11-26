@@ -790,7 +790,7 @@ func (h *harness) proxy() *httptest.Server {
 			g.entered <- struct{}{}
 			<-g.release
 		}
-		if strings.Contains(r.URL.Path, "/vcs/objects/") && h.slowLeft.Add(-1) >= 0 {
+		if strings.Contains(r.URL.Path, "/files/") && h.slowLeft.Add(-1) >= 0 {
 			d := time.Duration(h.slowFor.Load())
 			if d < 0 {
 				<-r.Context().Done()

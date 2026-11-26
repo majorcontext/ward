@@ -140,6 +140,22 @@ func TestLandRefusesABodyWithoutAValidBase(t *testing.T) {
 	}
 }
 
+func TestLandRefusesAtEnqueueAChangeThatIsTooLargeForOneLand(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	tip := h.chainOn(base, map[string]string{"a.txt": "base\n"}, 1001)
+	h.push("feature/big", tip, false)
+	h.branchFrom(base, "feature/small", "c.txt", "c\n")
+	code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/big", nil), nil)
+	if code != http.StatusBadRequest || !strings.Contains(string(body), "land_invalid") {
+		t.Fatalf("a range of 1001 commits: status = %d %s, want 400 land_invalid", code, body)
+	}
+	if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/small", nil), nil); code != http.StatusAccepted {
+		t.Fatalf("a small change: status = %d %s", code, body)
+	}
+}
+
 func TestLandRefusesToReadALandWithTheWrongTokenOrId(t *testing.T) {
 	h := newLandHarness(t)
 	p := h.startWard(wardOpts{noMirror: true})
