@@ -123,10 +123,6 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	if opts.Clock != nil {
 		clock = opts.Clock
 	}
-	pruneClock := clock
-	if pruneClock == nil {
-		pruneClock = check.RealClock()
-	}
 	queue := pull.New(store, cfg.Runners, clock)
 	checks := check.New(store, cfg.Runners, queue.Wake, clock, opts.Logger)
 	lands := land.New(cfg.Land, store, checks, clock, opts.Logger)
@@ -176,7 +172,7 @@ func run(ctx context.Context, getenv func(string) string, ln net.Listener, opts 
 	pruneDone := make(chan struct{})
 	go func() {
 		defer close(pruneDone)
-		pruneLoop(ctx, store, pruneClock, opts.Logger)
+		pruneLoop(ctx, store, time.Now, opts.Logger)
 	}()
 	engineDone := make(chan struct{})
 	go func() {
@@ -206,10 +202,14 @@ const (
 	pruneKeepAt = 30 * 24 * time.Hour
 )
 
-// pruneLoop deletes the state that ended more than pruneKeepAt ago, once at the start and then every pruneEvery.
-func pruneLoop(ctx context.Context, store *statesqlite.Store, clock check.Clock, log *slog.Logger) {
+// pruneLoop deletes the state that ended more than pruneKeepAt ago, once at the start and then every pruneEvery. It waits on
+// the wall clock and not on the injected clock: a timer of the injected clock is a step that a test of the workers counts
+// and advances.
+func pruneLoop(ctx context.Context, store *statesqlite.Store, now func() time.Time, log *slog.Logger) {
+	tick := time.NewTicker(pruneEvery)
+	defer tick.Stop()
 	for {
-		if n, err := store.Prune(ctx, clock.Now().Add(-pruneKeepAt)); err != nil && ctx.Err() == nil && log != nil {
+		if n, err := store.Prune(ctx, now().Add(-pruneKeepAt)); err != nil && ctx.Err() == nil && log != nil {
 			log.Error("state prune failed", "error", err.Error())
 		} else if n > 0 && log != nil {
 			log.Info("state pruned", "rows", n)
@@ -217,7 +217,7 @@ func pruneLoop(ctx context.Context, store *statesqlite.Store, clock check.Clock,
 		select {
 		case <-ctx.Done():
 			return
-		case <-clock.After(pruneEvery):
+		case <-tick.C:
 		}
 	}
 }
