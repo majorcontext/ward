@@ -2,7 +2,6 @@
 package land
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/ed25519"
@@ -28,7 +27,6 @@ import (
 
 const (
 	grantLife = 5 * time.Minute
-	maxWalk   = 10000
 	// MaxWait is the longest wait of a read of a land.
 	MaxWait = 60 * time.Second
 	// DefaultReadBudget is the time limit of one read of motte. A replica that opens its packs on first use needs more than
@@ -59,9 +57,6 @@ func span(ctx context.Context, name string, attrs ...attribute.KeyValue) (contex
 	}
 }
 
-// ErrNoMergeBase means that the first-parent chain of the branch never meets the first-parent chain of the target ref.
-var ErrNoMergeBase = errors.New("land: the branch has no merge base with the ref")
-
 // Config says how ward reaches motte and signs its grants.
 type Config struct {
 	URL string
@@ -82,6 +77,7 @@ type Request struct {
 	Repo         string
 	Ref          string
 	Branch       string
+	Base         string
 	DeleteBranch bool
 }
 
@@ -204,7 +200,7 @@ func (s *Service) Enqueue(ctx context.Context, req Request) (Land, error) {
 	} else if l, ok, err := s.Repeat(ctx, req); ok || err != nil {
 		return l, err
 	}
-	l := Land{ID: id, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
+	l := Land{ID: id, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, Base: req.Base, DeleteBranch: req.DeleteBranch, State: Queued, Checks: []CheckState{}}
 	ctx, end := span(ctx, "ward.land.enqueue", attribute.String("land_id", l.ID))
 	s.queued.Store(l.ID, s.clock.Now())
 	err := s.store.InsertLand(ctx, l)
@@ -228,7 +224,7 @@ func (s *Service) Repeat(ctx context.Context, req Request) (Land, bool, error) {
 	switch {
 	case err != nil || !ok:
 		return Land{}, false, err
-	case l.Repo != req.Repo || l.Ref != req.Ref || l.Branch != req.Branch || l.DeleteBranch != req.DeleteBranch:
+	case l.Repo != req.Repo || l.Ref != req.Ref || l.Branch != req.Branch || l.Base != req.Base || l.DeleteBranch != req.DeleteBranch:
 		return Land{}, true, ErrIDInUse
 	}
 	return l, true, nil
@@ -425,49 +421,4 @@ func (s *Service) client(scope grant.Scope, repo string) *client.Client {
 	return client.New(s.cfg.URL, func(context.Context) (string, error) {
 		return grant.Signer{Kid: s.cfg.Kid, Key: s.cfg.Key}.Mint(grant.Claims{Scope: scope, Repo: repo, Subject: "ward", Exp: s.clock.Now().Add(grantLife).Unix()})
 	}, opts...)
-}
-
-func firstParent(ctx context.Context, c *client.Client, sha string) (string, error) {
-	obj, err := c.Object(ctx, sha)
-	if err != nil {
-		return "", err
-	}
-	if obj.Type != "commit" {
-		return "", fmt.Errorf("%w: %s is not a commit", ErrNoMergeBase, sha)
-	}
-	head, _, _ := bytes.Cut(obj.Data, []byte("\n\n"))
-	for line := range strings.Lines(string(head)) {
-		if p, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "parent "); ok {
-			return p, nil
-		}
-	}
-	return "", nil
-}
-
-// mergeBase walks both first-parent chains one commit at a time. The first commit that one walk reaches and the other
-// has already seen is the newest common commit.
-func mergeBase(ctx context.Context, c *client.Client, tip, head string) (string, error) {
-	seenTip, seenHead := map[string]bool{}, map[string]bool{}
-	for n := 0; (tip != "" || head != "") && n < maxWalk; n++ {
-		var err error
-		if tip != "" {
-			if seenHead[tip] {
-				return tip, nil
-			}
-			seenTip[tip] = true
-			if tip, err = firstParent(ctx, c, tip); err != nil {
-				return "", err
-			}
-		}
-		if head != "" {
-			if seenTip[head] {
-				return head, nil
-			}
-			seenHead[head] = true
-			if head, err = firstParent(ctx, c, head); err != nil {
-				return "", err
-			}
-		}
-	}
-	return "", ErrNoMergeBase
 }

@@ -68,10 +68,13 @@ type LandCheck struct {
 
 // LandRequest is the body of POST /v1/lands.
 type LandRequest struct {
-	ID           string `json:"id,omitempty"`
-	Repo         string `json:"repo"`
-	Ref          string `json:"ref"`
-	Branch       string `json:"branch"`
+	ID     string `json:"id,omitempty"`
+	Repo   string `json:"repo"`
+	Ref    string `json:"ref"`
+	Branch string `json:"branch"`
+	// Base is the commit that the branch was built on: the merge base of the branch and the ref, which the caller finds
+	// with git from its own history.
+	Base         string `json:"base"`
 	DeleteBranch bool   `json:"delete_branch"`
 }
 

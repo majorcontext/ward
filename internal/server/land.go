@@ -76,8 +76,8 @@ func (s *Server) land(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	load()
-	if bodyErr != nil || req.Repo == "" || req.Branch == "" {
-		writeError(w, codeInvalidBody, "the body needs repo and branch")
+	if bodyErr != nil || req.Repo == "" || req.Branch == "" || !validCommit(req.Base) {
+		writeError(w, codeInvalidBody, "the body needs repo, branch and base, a 40-digit commit ID")
 		return
 	}
 	if req.Repo != c.Repo {
@@ -92,7 +92,7 @@ func (s *Server) land(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ID != "" {
-		if l, ok, err := s.d.Land.Repeat(r.Context(), land.Request{ID: req.ID, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch}); err != nil {
+		if l, ok, err := s.d.Land.Repeat(r.Context(), land.Request{ID: req.ID, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, Base: req.Base, DeleteBranch: req.DeleteBranch}); err != nil {
 			s.landEnqueueError(w, err)
 			return
 		} else if ok {
@@ -104,7 +104,7 @@ func (s *Server) land(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeRefNotAllowed, "no pattern of the land configuration names the ref")
 		return
 	}
-	l, err := s.d.Land.Enqueue(r.Context(), land.Request{ID: req.ID, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, DeleteBranch: req.DeleteBranch})
+	l, err := s.d.Land.Enqueue(r.Context(), land.Request{ID: req.ID, Repo: req.Repo, Ref: req.Ref, Branch: req.Branch, Base: req.Base, DeleteBranch: req.DeleteBranch})
 	if err != nil {
 		s.landEnqueueError(w, err)
 		return
@@ -184,4 +184,16 @@ func (s *Server) landEnqueueError(w http.ResponseWriter, err error) {
 	}
 	s.d.Logger.Error("record land", "error", err.Error())
 	writeError(w, codeInternal, "internal error")
+}
+
+func validCommit(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' && c < 'a' || c > 'f' {
+			return false
+		}
+	}
+	return true
 }

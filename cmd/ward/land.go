@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -67,14 +68,38 @@ func accessHeader(getenv func(string) string) (name, value string) {
 	return name, getenv("WARD_ACCESS_TOKEN")
 }
 
-// runLand is `ward land [--ref REF] [--delete-branch] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
+// mergeBase returns the merge base that git finds for the branch and the target ref in the working tree dir. It reads the
+// local branch, else the remote-tracking branch of remote, and the remote-tracking ref of the target.
+func mergeBase(ctx context.Context, dir, remote, branch, ref string) (string, error) {
+	rev := func(candidates ...string) string {
+		for _, c := range candidates {
+			if exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", c+"^{commit}").Run() == nil {
+				return c
+			}
+		}
+		return ""
+	}
+	head, target := rev("refs/heads/"+branch, "refs/remotes/"+remote+"/"+branch), rev("refs/remotes/"+remote+"/"+ref)
+	if head == "" || target == "" {
+		return "", fmt.Errorf("the working tree %s has no branch %s or no remote-tracking ref %s/%s: fetch first", dir, branch, remote, ref)
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "merge-base", head, target).Output()
+	if err != nil {
+		return "", fmt.Errorf("git merge-base %s %s: %w", head, target, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// runLand is `ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
 func runLand(ctx context.Context, args []string, getenv func(string) string, now func() time.Time, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("land", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	ref := fs.String("ref", "main", "ref to land on")
 	del := fs.Bool("delete-branch", false, "delete the branch after it landed")
+	dir := fs.String("C", ".", "git working tree that holds the branch")
+	remote := fs.String("remote", "origin", "git remote that tracks the repository")
 	if fs.Parse(args) != nil || fs.NArg() != 2 || getenv("WARD_URL") == "" {
-		fmt.Fprintln(stderr, "usage: WARD_URL=... ward land [--ref REF] [--delete-branch] REPO BRANCH")
+		fmt.Fprintln(stderr, "usage: WARD_URL=... ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] REPO BRANCH")
 		return 2
 	}
 	repo, branch := fs.Arg(0), fs.Arg(1)
@@ -83,9 +108,14 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 		fmt.Fprintln(stderr, "ward land:", err)
 		return 2
 	}
+	base, err := mergeBase(ctx, *dir, *remote, branch, *ref)
+	if err != nil {
+		fmt.Fprintln(stderr, "ward land:", err)
+		return 2
+	}
 	c := &landClient{base: strings.TrimRight(getenv("WARD_URL"), "/"), tok: tok}
 	c.accessName, c.accessValue = accessHeader(getenv)
-	body, _ := json.Marshal(wardapi.LandRequest{Repo: repo, Ref: *ref, Branch: branch, DeleteBranch: *del})
+	body, _ := json.Marshal(wardapi.LandRequest{Repo: repo, Ref: *ref, Branch: branch, Base: base, DeleteBranch: *del})
 	cur, code := c.call(ctx, http.MethodPost, "/v1/lands", body, stderr)
 	if code != 0 {
 		return code

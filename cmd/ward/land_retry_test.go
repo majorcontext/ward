@@ -49,6 +49,10 @@ func TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain(t *testing.T
 		"poll that stalls":    {queued, []step{drop, stall}, 1, 0, "land L1"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			work := t.TempDir()
+			gitIn(t, work, "init", "-q", "-b", "b")
+			gitIn(t, work, "commit", "-q", "--allow-empty", "-m", "x")
+			gitIn(t, work, "update-ref", "refs/remotes/origin/main", "HEAD")
 			synctest.Test(t, func(t *testing.T) {
 				n := 0
 				old := noRedirect.Transport
@@ -65,7 +69,7 @@ func TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain(t *testing.T
 				})
 				var out bytes.Buffer
 				start := time.Now()
-				code := runLand(t.Context(), []string{"native:r", "b"}, func(k string) string { return map[string]string{"WARD_URL": "http://ward.test", "WARD_TOKEN": "t"}[k] }, time.Now, &out, &out)
+				code := runLand(t.Context(), []string{"-C", work, "native:r", "b"}, func(k string) string { return map[string]string{"WARD_URL": "http://ward.test", "WARD_TOKEN": "t"}[k] }, time.Now, &out, &out)
 				if code != c.exit || (c.requests > 0 && n != c.requests) || !strings.Contains(out.String(), c.output) || time.Since(start) > landRetryWindow {
 					t.Fatalf("exit %d after %d requests in %s\noutput: %s", code, n, time.Since(start), &out)
 				}

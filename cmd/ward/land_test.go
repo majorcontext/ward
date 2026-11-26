@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -43,10 +44,27 @@ func (h *harness) protectMain() {
 
 func (h *harness) landToken(repo string) string { return h.token(token.ScopeLand, repo) }
 
+// fetchAll makes the remote-tracking refs of the working tree match the refs of motte.
+func (h *harness) fetchAll() {
+	h.t.Helper()
+	h.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*")
+}
+
+// landBody makes the body of a land request, with the base that git finds for the branch and the ref.
 func (h *harness) landBody(branch string, extra map[string]any) []byte {
 	m := map[string]any{"repo": h.repo, "branch": branch}
 	for k, v := range extra {
 		m[k] = v
+	}
+	if _, ok := m["base"]; !ok {
+		ref, _ := m["ref"].(string)
+		if ref == "" {
+			ref = "main"
+		}
+		h.fetchAll()
+		if out, err := exec.Command("git", "-C", h.work, "merge-base", "refs/remotes/origin/"+branch, "refs/remotes/origin/"+ref).Output(); err == nil {
+			m["base"] = strings.TrimSpace(string(out))
+		}
 	}
 	b, _ := json.Marshal(m)
 	return b
@@ -103,6 +121,22 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 	}
 	if _, err := h.readClient().Ref(t.Context(), "refs/ward/candidates/"+queued.ID); !errors.Is(err, client.ErrNotFound) {
 		t.Fatalf("candidate ref after the land: %v", err)
+	}
+}
+
+func TestLandRefusesABodyWithoutAValidBase(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	bare, _ := json.Marshal(map[string]string{"repo": h.repo, "branch": "feature/x"})
+	if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), bare, nil); code != http.StatusBadRequest {
+		t.Errorf("no base field: status = %d %s, want 400", code, body)
+	}
+	for name, base := range map[string]string{"empty": "", "short": "abc123", "upper case": strings.Repeat("A", 40)} {
+		if code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/x", map[string]any{"base": base}), nil); code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d %s, want 400", name, code, body)
+		}
 	}
 }
 
@@ -168,7 +202,8 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 		return code, out.String(), errOut.String()
 	}
 
-	code, out, errOut := run(h.repo, "feature/clean")
+	h.fetchAll()
+	code, out, errOut := run("-C", h.work, h.repo, "feature/clean")
 	main, _ := h.readClient().Ref(t.Context(), "main")
 	if code != 0 || errOut != "" || !strings.Contains(out, "tip "+main.Commit+"\n") || !strings.Contains(out, clean+" -> "+main.Commit+"\n") {
 		t.Fatalf("clean land: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
@@ -177,7 +212,7 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 		t.Fatal("the land did not move main")
 	}
 
-	code, out, errOut = run(h.repo, "feature/bad")
+	code, out, errOut = run("-C", h.work, h.repo, "feature/bad")
 	if code != 1 || out != "" || !strings.Contains(errOut, "land_conflict") || !strings.Contains(errOut, "\na.txt\n") {
 		t.Fatalf("conflicting land: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
 	}
@@ -192,7 +227,7 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 		t.Fatalf("usage error: exit %d, %s", code, errOut)
 	}
 	env["WARD_KEY_FILE"] = ""
-	if code, _, errOut := run(h.repo, "feature/bad"); code != 2 || !slices.Contains(strings.Fields(errOut), "WARD_TOKEN,") {
+	if code, _, errOut := run("-C", h.work, h.repo, "feature/bad"); code != 2 || !slices.Contains(strings.Fields(errOut), "WARD_TOKEN,") {
 		t.Fatalf("no credential: exit %d, %s", code, errOut)
 	}
 }
@@ -314,8 +349,9 @@ func TestLandSendsTheAccessTokenInTheHeaderOfAProxyAndNoBearer(t *testing.T) {
 			base := h.seedMain()
 			h.branchFrom(base, "feature/x", "c.txt", "c\n")
 			env["WARD_URL"], env["WARD_ACCESS_TOKEN"] = p.URL, jwt
+			h.fetchAll()
 			var out, errOut bytes.Buffer
-			if code := runLand(t.Context(), []string{h.repo, "feature/x"}, func(k string) string { return env[k] }, time.Now, &out, &errOut); code != 0 {
+			if code := runLand(t.Context(), []string{"-C", h.work, h.repo, "feature/x"}, func(k string) string { return env[k] }, time.Now, &out, &errOut); code != 0 {
 				t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
 			}
 		})
@@ -381,6 +417,7 @@ func TestLandRefusesARefThatNoPatternNamesAndAnswersARepeatOfAnID(t *testing.T) 
 	h.branchFrom(base, "feature/x", "c.txt", "c\n")
 	h.branchFrom(base, "feature/y", "d.txt", "d\n")
 	post := func(extra map[string]any) (int, landState, string) {
+		extra["base"] = base
 		code, body := p.do("POST", "/v1/lands", h.landToken(h.repo), h.landBody("feature/x", extra), nil)
 		var l landState
 		_ = json.Unmarshal(body, &l)

@@ -55,6 +55,7 @@ type Land struct {
 	Repo          string             `json:"repo"`
 	Ref           string             `json:"ref"`
 	Branch        string             `json:"branch"`
+	Base          string             `json:"base"`
 	DeleteBranch  bool               `json:"delete_branch"`
 	State         State              `json:"state"`
 	Tree          string             `json:"tree"`

@@ -191,11 +191,7 @@ func (s *Service) add(ctx context.Context, reader, merger *client.Client, l *Lan
 	if err != nil {
 		return nil, s.refusal(err)
 	}
-	base, err := mergeBase(ctx, reader, tip, branch.Commit)
-	if err != nil {
-		return nil, s.refusal(err)
-	}
-	res, err := merger.Land(ctx, l.Repo, api.LandRequest{Ref: name, Base: base, Head: branch.Commit})
+	res, err := merger.Land(ctx, l.Repo, api.LandRequest{Ref: name, Base: l.Base, Head: branch.Commit})
 	if later && errors.Is(err, client.ErrLandConflict) {
 		return nil, outcome{}
 	}

@@ -300,10 +300,11 @@ func TestLandCommandWaitsForChecksAndReportsAFailedCheck(t *testing.T) {
 	h.branchFrom(base, "feature/bad", "d.txt", "d\n")
 	env := map[string]string{"WARD_URL": p.URL, "WARD_KID": "c",
 		"WARD_KEY_FILE": h.writeFile("caller.key", base64.StdEncoding.EncodeToString(h.callerSK.Seed()))}
+	h.fetchAll()
 	start := func(branch string) (*signalWriter, *bytes.Buffer, <-chan int) {
 		out, errOut, done := &signalWriter{want: "checking unit\n", seen: make(chan struct{})}, &bytes.Buffer{}, make(chan int, 1)
 		go func() {
-			done <- runLand(t.Context(), []string{h.repo, branch}, func(k string) string { return env[k] }, time.Now, out, errOut)
+			done <- runLand(t.Context(), []string{"-C", h.work, h.repo, branch}, func(k string) string { return env[k] }, time.Now, out, errOut)
 		}()
 		return out, errOut, done
 	}
