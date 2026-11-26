@@ -1,5 +1,2 @@
 # Seams of docs/architecture.md "Provider seams" that miss the rule, one seam name per line with the reason.
 # The list only shrinks: internal/seams compares it with the gap rows of the table and with its merge-base copy.
-check-store # one implementation (sqlite) and no conformance suite
-land-store # one implementation (sqlite) and no conformance suite
-mirror-store # one implementation (sqlite) and no conformance suite

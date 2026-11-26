@@ -30,7 +30,7 @@ Non-goals:
 | `internal/dispatch/pull` | The lease queue of the runners (see Dispatch). `internal/runner/install` is `ward runner install` (see Runner host). | W6 |
 | `internal/gitremote` | The seam `gitremote.Remote` (list the refs of a git remote and push refs to it), with the implementations `gitbin` (the git binary) and `fakeremote` (memory), and its suite `remotetest` (see Git access). | W2 |
 | `internal/gitcred` | The seam `gitcred.Credential` (the password of a git remote for one run), with the implementations `passwordfile` and `forgeapp` (the GitHub App exchange of GitHub App credential), and its suite `credtest`. | W2 |
-| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/state/sqlite` holds the state of ward (see State store). | W2, W3, W4 |
+| `internal/mirror` | The mirror (see Mirror): trigger intake, clone cache, push workers, GitHub App credential, seed. `internal/state/sqlite` holds the state of ward (see State store). `internal/state/memory` is the in-memory store with the same interfaces. | W2, W3, W4 |
 | `internal/telemetry` | OTLP export of traces and metrics. | W2 |
 | `internal/leaklint`, `internal/testtime`, `internal/lint` | Repository tooling: denylist scan, test time budget (enforced in CI's reference environment, not in the land check), wall-clock analyzer. | W1 |
 | `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
@@ -505,11 +505,11 @@ Every external provider sits behind an interface that its consumer owns. A provi
 |---|---|---|---|---|
 | identity | `internal/identity.Authenticator` | `internal/identity/identitytest.Run` | `internal/identity/bearer`, `internal/identity/oidc`, `internal/identity/usertoken` | |
 | user-token-store | `internal/identity/usertoken.Store` | `internal/usertokentest.Run` | `internal/state/sqlite`, `internal/usertokentest` | |
-| check-store | `internal/check.Store` | none — no suite exists yet | `internal/state/sqlite` | One implementation and no suite. |
-| land-store | `internal/land.Store` | none — no suite exists yet | `internal/state/sqlite` | One implementation and no suite. |
+| check-store | `internal/check.Store` | `internal/check/checktest.Run` | `internal/state/sqlite`, `internal/state/memory` | |
+| land-store | `internal/land.Store` | `internal/land/landtest.Run` | `internal/state/sqlite`, `internal/state/memory` | |
 | runner-sandbox | `internal/runner/sandbox.Sandbox` | `internal/runner/sandbox/sandboxtest.Run` | `internal/runner/sandbox/container`, `internal/runner/sandbox/gvisor`, `internal/runner/sandbox/fake` | |
 | runner-host | none — a contract of the machine | none — no code interface | none | Contract: a Linux host with a container engine, `runsc` and `/dev/kvm`, local disk, and outbound HTTPS to ward (see Runner host). |
-| mirror-store | `internal/mirror.Store` | none — no suite exists yet | `internal/state/sqlite` | One implementation and no suite. |
+| mirror-store | `internal/mirror.Store` | `internal/mirror/mirrortest.Run` | `internal/state/sqlite`, `internal/state/memory` | |
 | mirror-remote | `internal/gitremote.Remote` | `internal/gitremote/remotetest.Run` | `internal/gitremote/gitbin`, `internal/gitremote/fakeremote` | |
 | mirror-remote-credential | `internal/gitcred.Credential` | `internal/gitcred/credtest.Run` | `internal/gitcred/passwordfile`, `internal/gitcred/forgeapp` | |
 

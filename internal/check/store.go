@@ -64,7 +64,8 @@ type Store interface {
 	Results(ctx context.Context, repo, tree, hash, env string) ([]Result, error)
 	MaxResultID(ctx context.Context) (int64, error)
 	// Lease gives kid, under leaseID, the oldest open request of one of repos that has no live lease, until the time until.
-	// A lease that passed its time is dead, so its request is leasable again with the same ID.
+	// A lease that passed its time is dead, so its request is leasable again with the same ID. The returned request has
+	// AcceptedAt set to now.
 	Lease(ctx context.Context, repos []string, kid, leaseID string, now, until time.Time) (Request, bool, error)
 	// RenewLease moves the end of a lease that kid holds. It returns false when the request is closed, when its repository
 	// is not in repos, when a newer lease replaced the lease, or when kid does not hold it.

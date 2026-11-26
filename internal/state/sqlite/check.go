@@ -225,6 +225,7 @@ func (s *Store) Lease(ctx context.Context, repos []string, kid, leaseID string, 
 		if _, err := tx.ExecContext(ctx, `UPDATE check_requests SET accepted_at = ? WHERE id = ?`, micro(now), r.ID); err != nil {
 			return err
 		}
+		r.AcceptedAt = now
 		out, leased = r, true
 		return nil
 	})
