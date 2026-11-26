@@ -42,7 +42,7 @@ func (w *lineCap) Write(p []byte) (int, error) {
 
 // listObjects lists the objects that in selects. The bool is true when more than max objects match.
 func (g *gitRunner) listObjects(ctx context.Context, clone, in string, max int) (string, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, g.timeout)
+	ctx, cancel := context.WithTimeout(ctx, g.Timeout)
 	defer cancel()
 	w := &lineCap{max: max, cancel: cancel}
 	cmd := exec.CommandContext(ctx, "git", "rev-list", "--stdin", "--objects")
@@ -50,7 +50,7 @@ func (g *gitRunner) listObjects(ctx context.Context, clone, in string, max int) 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil && !w.over {
-		return "", false, &gitError{stderr: stderr.String(), err: err, timedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+		return "", false, &gitError{Stderr: stderr.String(), Err: err, TimedOut: errors.Is(ctx.Err(), context.DeadlineExceeded)}
 	}
 	return w.buf.String(), w.over, nil
 }

@@ -12,13 +12,13 @@ func (e *Engine) reconcile(ctx context.Context, en Entry) error {
 	if err != nil {
 		return err
 	}
-	remote, err := e.git.lsRemote(ctx, en.Remote, creds)
+	onGit, err := e.remote.List(ctx, en.Remote, creds)
 	release()
 	if err != nil {
 		return err
 	}
 	onRemote := map[string]string{}
-	for git, sha := range remote {
+	for git, sha := range onGit {
 		if stored, ok := StoredRef(git); ok && en.Matches(stored) {
 			onRemote[stored] = sha
 		}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/majorcontext/ward/internal/gitremote"
 	"slices"
 	"sort"
 
@@ -226,13 +227,13 @@ func (e *Engine) fetchRemoteRefs(ctx context.Context, en Entry, clone string) ([
 	if err != nil {
 		return nil, err
 	}
-	remote, err := e.git.lsRemote(ctx, en.Remote, creds)
+	onRemote, err := e.remote.List(ctx, en.Remote, creds)
 	release()
 	if err != nil {
 		return nil, err
 	}
 	var specs []string
-	for git := range remote {
+	for git := range onRemote {
 		if stored, ok := StoredRef(git); ok && en.Matches(stored) {
 			specs = append(specs, fmt.Sprintf(seedFetchSpec, git, localRef(git)))
 		}
@@ -255,7 +256,7 @@ func (e *Engine) fetchRemoteRefs(ctx context.Context, en Entry, clone string) ([
 	}
 	var tips []seedTip
 	for _, t := range all {
-		if _, ok := remote[t.Git]; ok {
+		if _, ok := onRemote[t.Git]; ok {
 			if stored, ok := StoredRef(t.Git); ok && en.Matches(stored) {
 				tips = append(tips, t)
 			}
@@ -305,12 +306,12 @@ func (e *Engine) pushSeedRef(ctx context.Context, en Entry, clone string, sizer 
 			return err
 		}
 		pctx, end := e.span(ctx, "ward.mirror.seed.push")
-		res, err := e.git.push(pctx, clone, e.motte.gitURL(en.Repo), creds, []pushSpec{{Ref: t.Git, Commit: step, Lease: lease, LeaseSet: true}})
+		res, err := e.remote.Push(pctx, clone, e.motte.gitURL(en.Repo), creds, []gitremote.PushSpec{{Ref: t.Git, Commit: step, Lease: lease, LeaseSet: true}})
 		end()
 		if err != nil {
 			return err
 		}
-		if res[t.Git] != outcomeOK || !hasResult(res, t.Git) {
+		if res[t.Git] != gitremote.OK || !hasResult(res, t.Git) {
 			return fmt.Errorf("motte refused the push of %s", t.Git)
 		}
 		if err := e.store.SetSeedRef(ctx, en.Name, stored, SeedRef{Commit: step}); err != nil {
@@ -359,14 +360,14 @@ func (e *Engine) deleteSeeded(ctx context.Context, en Entry, stale []string, exp
 	for _, r := range refs {
 		current[r.Name] = r.Commit
 	}
-	var specs []pushSpec
+	var specs []gitremote.PushSpec
 	for _, name := range stale {
 		cur, x := current[name], expect[name]
 		git, named := GitRef(name)
 		switch {
 		case cur == "" || !named:
 		case cur == x.Commit || cur == x.Next:
-			specs = append(specs, pushSpec{Ref: git, Lease: cur, LeaseSet: true})
+			specs = append(specs, gitremote.PushSpec{Ref: git, Lease: cur, LeaseSet: true})
 		default:
 			e.log.Warn("seed cleanup skipped a ref that motte holds at another value", "mirror", en.Name, "ref", name)
 		}
@@ -385,12 +386,12 @@ func (e *Engine) deleteSeeded(ctx context.Context, en Entry, stale []string, exp
 	if err != nil {
 		return err
 	}
-	res, err := e.git.push(ctx, clone, e.motte.gitURL(en.Repo), creds, specs)
+	res, err := e.remote.Push(ctx, clone, e.motte.gitURL(en.Repo), creds, specs)
 	if err != nil {
 		return err
 	}
 	for _, s := range specs {
-		if !hasResult(res, s.Ref) || res[s.Ref] != outcomeOK {
+		if !hasResult(res, s.Ref) || res[s.Ref] != gitremote.OK {
 			return fmt.Errorf("motte refused the delete of %s", s.Ref)
 		}
 	}
