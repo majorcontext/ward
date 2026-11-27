@@ -318,9 +318,7 @@ func TestMirrorResetsAfterMotteLosesTheEvents(t *testing.T) {
 
 	c1 := h.commit("a.txt", "1")
 	h.push("feature/r", c1, false)
-	if err := h.motte.Meta.PruneEvents(t.Context(), time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
+	h.motte.PruneEvents(t, time.Now().Add(time.Hour))
 	resets := h.count("reset")
 	p = h.startWard(wardOpts{})
 	h.waitTip("feature/r", c1)
