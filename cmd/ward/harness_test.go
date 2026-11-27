@@ -246,7 +246,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return buildHarness(t, testserver.StartLocal(&seededTB{TB: t}), newRemote(t))
+	return buildHarness(t, startMotte(t), newRemote(t))
 }
 
 // newLandHarness is a harness for a test that needs no mirror. It shares the one motte of the package and makes no remote.

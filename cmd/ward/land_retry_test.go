@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +35,19 @@ func stall(r *http.Request) (*http.Response, error) {
 }
 
 func TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain(t *testing.T) {
+	work := t.TempDir()
+	if err := os.CopyFS(work, os.DirFS(workTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	objs := commitObjs(nil, "", "x", 1700000000)
+	if err := writeLoose(filepath.Join(work, ".git"), objs); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"refs/heads/b", "refs/remotes/origin/main"} {
+		if err := writeRef(filepath.Join(work, ".git"), ref, objs[len(objs)-1].id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	queued, landed := resp(202, `{"id":"L1","state":"queued"}`), resp(200, `{"id":"L1","state":"landed","tip":"abc123"}`)
 	for name, c := range map[string]struct {
 		post     step
@@ -50,10 +65,6 @@ func TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain(t *testing.T
 		"poll that stalls":    {queued, []step{drop, stall}, 1, 0, "land L1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			work := t.TempDir()
-			gitIn(t, work, "init", "-q", "-b", "b")
-			gitIn(t, work, "commit", "-q", "--allow-empty", "-m", "x")
-			gitIn(t, work, "update-ref", "refs/remotes/origin/main", "HEAD")
 			synctest.Test(t, func(t *testing.T) {
 				n := 0
 				old := noRedirect.Transport
