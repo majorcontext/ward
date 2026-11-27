@@ -195,7 +195,7 @@ func (h *harness) partialSeed(clk *fakeClock) *wardProc {
 
 func TestSeedResumeWritesNothingToTheRemoteBeforeItFinishes(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(6, 0)
+	h.fillRemote(4, 0)
 	h.skip()
 	h.remote.logPushes()
 	p := h.partialSeed(newFakeClock(func() { h.note("timer", "") }))
@@ -213,7 +213,7 @@ func TestSeedResumeWritesNothingToTheRemoteBeforeItFinishes(t *testing.T) {
 
 func TestSeedResumeNeverOverwritesARefThatMotteMovedMeanwhile(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(6, 0)
+	h.fillRemote(4, 0)
 	clk := newFakeClock(func() { h.note("timer", "") })
 	p := h.partialSeed(clk)
 	caller := h.commit("c.txt", "caller")
@@ -228,9 +228,9 @@ func TestSeedResumeNeverOverwritesARefThatMotteMovedMeanwhile(t *testing.T) {
 
 func TestSeedBoundsTheInflatedSizeOfEachPush(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(3, 1<<20)
+	h.fillRemote(3, 1<<16)
 	h.skip()
-	h.startWard(wardOpts{refs: seedRefs, seed: true, seedInflated: fmt.Sprint(3 << 19)})
+	h.startWard(wardOpts{refs: seedRefs, seed: true, seedInflated: fmt.Sprint(3 << 15)})
 	h.wantSeeded()
 	main := 0
 	for _, ev := range h.events() {
@@ -239,13 +239,13 @@ func TestSeedBoundsTheInflatedSizeOfEachPush(t *testing.T) {
 		}
 	}
 	if main != 3 {
-		t.Fatalf("main moved %d times, want 3 pushes of one 1 MiB file", main)
+		t.Fatalf("main moved %d times, want 3 pushes of one 64 KiB file", main)
 	}
 }
 
 func TestSeedRecoversFromACorruptClone(t *testing.T) {
 	h := newHarness(t)
-	h.fillRemote(6, 0)
+	h.fillRemote(4, 0)
 	h.skip()
 	clk := newFakeClock(func() { h.note("timer", "") })
 	h.partialSeed(clk)
