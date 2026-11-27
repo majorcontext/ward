@@ -385,11 +385,13 @@ func (h *harness) tokenAs(kid string, scope token.Scope, repo string) string {
 }
 
 type wardOpts struct {
-	refs   []string
-	prune  bool
-	budget string
-	ttl    string
-	clock  mirror.Clock
+	// required is the WARD_REQUIRED_CHECKS text with %s for the repository, or empty.
+	required string
+	refs     []string
+	prune    bool
+	budget   string
+	ttl      string
+	clock    mirror.Clock
 	// relative gives ward a data directory and a credential file under the working directory of the test, as relative paths.
 	relative bool
 	// proxied sends ward to motte through a proxy that holdMotte can hold.
@@ -490,6 +492,9 @@ func (h *harness) startWard(o wardOpts) *wardProc {
 		"WARD_HOOK_SECRET_FILE": h.writeFile("hook.secret", h.secret+"\n"), "WARD_TRUSTED_KEYS": string(trusted),
 		"WARD_MIRRORS": string(entries), "WARD_RUNNERS": runners, "WARD_GITHUB_API_URL": githubAPI, "WARD_CLONE_DISK_BUDGET": o.budget, "WARD_CLONE_IDLE_TTL": o.ttl,
 		"WARD_LAND_REFS": "main,other", "WARD_SEED_MAX_OBJECTS": o.seedObjects, "WARD_SEED_MAX_INFLATED_BYTES": o.seedInflated,
+	}
+	if o.required != "" {
+		env["WARD_REQUIRED_CHECKS"] = strings.ReplaceAll(o.required, "%s", h.repo)
 	}
 	if o.oidc != nil {
 		rules, _ := json.Marshal([]map[string]any{{"principals": []string{"@dev.test"}, "repos": []string{h.repo}}})

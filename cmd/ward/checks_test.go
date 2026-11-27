@@ -659,3 +659,34 @@ func TestLandReusesAChangeKeyedPassOnlyForTheSameBaseTreeAndTree(t *testing.T) {
 		t.Fatal("a pass for the same base tree and tree was asked for again")
 	}
 }
+
+const requireReview = `[{"repo":"%s","ref":"main","checks":["review"]}]`
+
+func TestLandIsRefusedWhenTheCheckFileLacksARequiredCheck(t *testing.T) {
+	h, run := newLandHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{noMirror: true, runner: run, required: requireReview})
+	base := h.seedChecked(unitChecks)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	failed := h.awaitLand(p, h.postLand(p, "main", "feature/x", nil).ID, "failed")
+	if failed.Error.Code != "required_check_missing" || !strings.Contains(failed.Error.Message, `"review"`) || h.mainTip() != base || len(run.extra()) != 0 {
+		t.Fatalf("land = %+v", failed)
+	}
+}
+
+func TestLandRunsNormallyWhenTheRequiredCheckIsInTheFileOrTheListIsEmpty(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct{ required, file string }{
+		"the file has the check": {requireReview, `{"checks":[{"name":"review","run":["make","review"],"timeout_seconds":60}]}`},
+		"the list is empty":      {`[]`, unitChecks},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, run := newLandHarness(t), newRunner(t)
+			p := h.startWard(wardOpts{noMirror: true, runner: run, required: c.required})
+			base := h.seedChecked(c.file)
+			h.branchFrom(base, "feature/x", "c.txt", "c\n")
+			l := h.postLand(p, "main", "feature/x", nil)
+			p.answer(run.next(), "pass", "ok")
+			h.awaitLand(p, l.ID, "landed")
+		})
+	}
+}

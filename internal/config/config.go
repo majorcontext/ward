@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -70,10 +71,15 @@ func Load(getenv func(string) string) (Config, error) {
 	c.Land = land.Config{URL: c.Mirror.Motte.URL, Kid: c.Mirror.Motte.Kid, Key: key}
 	if v := getenv("WARD_LAND_REFS"); v != "" {
 		for _, p := range strings.Split(v, ",") {
-			if p = strings.TrimSpace(p); p == "" || strings.ContainsAny(p, " \t") || (strings.Contains(p, "*") && (strings.Count(p, "*") != 1 || !strings.HasSuffix(p, "*"))) {
+			if p = strings.TrimSpace(p); !validRefPattern(p) {
 				return c, errors.New("WARD_LAND_REFS must be a comma-separated list of ref names or prefixes that end in *")
 			}
 			c.Land.Refs = append(c.Land.Refs, p)
+		}
+	}
+	if raw := getenv("WARD_REQUIRED_CHECKS"); raw != "" {
+		if c.Land.Required, err = parseRequired([]byte(raw)); err != nil {
+			return c, fmt.Errorf("WARD_REQUIRED_CHECKS: %w", err)
 		}
 	}
 	if v := getenv("WARD_GITHUB_API_URL"); v != "" {
@@ -177,6 +183,37 @@ func ReadPrivateKey(path string) (ed25519.PrivateKey, error) {
 		return ed25519.PrivateKey(b), nil
 	}
 	return nil, errors.New("not an Ed25519 private key or seed")
+}
+
+func validRefPattern(p string) bool {
+	return p != "" && !strings.ContainsAny(p, " \t") && (!strings.Contains(p, "*") || strings.Count(p, "*") == 1 && strings.HasSuffix(p, "*"))
+}
+
+// parseRequired reads the JSON list of required checks: [{"repo","ref","checks"}].
+func parseRequired(raw []byte) ([]land.Requirement, error) {
+	var out []land.Requirement
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("must be a JSON list of {repo, ref, checks}: %w", err)
+	}
+	if out == nil {
+		return nil, errors.New("must be a JSON list, not null")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("data follows the list")
+	}
+	for _, r := range out {
+		if r.Repo == "" || !validRefPattern(r.Ref) || len(r.Checks) == 0 {
+			return nil, errors.New("each entry needs a repo, a ref (a ref name or a prefix that ends in *) and a non-empty list of checks")
+		}
+		for _, n := range r.Checks {
+			if !check.ValidName(n) {
+				return nil, fmt.Errorf("check name %q must be 1 to 40 characters of a-z 0-9 -", n)
+			}
+		}
+	}
+	return out, nil
 }
 
 func parseTrustedKeys(raw string) ([]token.Key, error) {

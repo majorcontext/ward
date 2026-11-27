@@ -90,6 +90,10 @@ spec:
             - name: WARD_LAND_REFS
               value: {{ join "," .Values.landRefs | quote }}
             {{- end }}
+            {{- if .Values.requiredChecks }}
+            - name: WARD_REQUIRED_CHECKS
+              value: {{ toJson .Values.requiredChecks | quote }}
+            {{- end }}
             {{- with .Values.githubApiUrl }}
             - name: WARD_GITHUB_API_URL
               value: {{ . | quote }}

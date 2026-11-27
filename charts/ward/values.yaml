@@ -58,6 +58,10 @@ runners: []
 # Empty means main only.
 landRefs: []
 
+# requiredChecks lists the checks that the check file must hold for a land onto a ref. Each has repo, ref (a ref name, or a
+# prefix that ends in *) and checks (names). It sets WARD_REQUIRED_CHECKS. Empty means no requirement.
+requiredChecks: []
+
 # githubApiUrl sets WARD_GITHUB_API_URL, for a GitHub Enterprise Server.
 githubApiUrl: ""
 

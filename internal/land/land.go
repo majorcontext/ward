@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,39 @@ type Config struct {
 	ReadBudget time.Duration
 	// Refs lists the ref patterns that a land may name: a stored ref name, or a prefix that ends in *. Nil means main only.
 	Refs []string
+	// Required lists the checks that the check file must hold for a land onto a matching ref.
+	Required []Requirement
+}
+
+// Requirement says that the check file that judges a land of Repo onto a ref that Ref names must have a check of each name
+// in Checks. Ref is a stored ref name, or a prefix that ends in *.
+type Requirement struct {
+	Repo   string   `json:"repo"`
+	Ref    string   `json:"ref"`
+	Checks []string `json:"checks"`
+}
+
+// RefMatches reports whether pattern, a ref name or a prefix that ends in *, names ref.
+func RefMatches(pattern, ref string) bool {
+	if prefix, wild := strings.CutSuffix(pattern, "*"); wild {
+		return strings.HasPrefix(ref, prefix)
+	}
+	return pattern == ref
+}
+
+// missingCheck returns the name of the first required check of the land target that checks lacks, or the empty string.
+func (s *Service) missingCheck(k Key, checks []check.Check) string {
+	for _, r := range s.cfg.Required {
+		if r.Repo != k.Repo || !RefMatches(r.Ref, k.Ref) {
+			continue
+		}
+		for _, name := range r.Checks {
+			if !slices.ContainsFunc(checks, func(c check.Check) bool { return c.Name == name }) {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // Request names the branch to land and where.
@@ -173,11 +207,7 @@ func (s *Service) RefAllowed(ref string) bool {
 		refs = []string{"main"}
 	}
 	for _, p := range refs {
-		if prefix, wild := strings.CutSuffix(p, "*"); wild {
-			if strings.HasPrefix(ref, prefix) {
-				return true
-			}
-		} else if p == ref {
+		if RefMatches(p, ref) {
 			return true
 		}
 	}

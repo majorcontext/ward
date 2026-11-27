@@ -22,6 +22,9 @@ const (
 
 var nameRE = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 
+// ValidName reports whether name is a valid name of a check.
+func ValidName(name string) bool { return nameRE.MatchString(name) }
+
 // Check is one required check. The runner runs Run at the root of the tree.
 type Check = runnerproto.Check
 

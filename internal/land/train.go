@@ -3,6 +3,7 @@ package land
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -39,7 +40,13 @@ func (s *Service) runTrain(ctx context.Context, k Key, ls []Land) error {
 	}
 	checks, err := requiredChecks(ctx, reader, k.Repo, tip.Commit)
 	var fileErr fileError
+	missing := ""
+	if err == nil {
+		missing = s.missingCheck(k, checks)
+	}
 	switch {
+	case missing != "":
+		return s.conclude(&ls[0], outcome{kind: failed, err: &Error{Code: CodeRequired, Message: fmt.Sprintf("the check file of the ref has no check %q", missing), Details: map[string]any{"check": missing}}})
 	case errors.As(err, &fileErr):
 		return s.conclude(&ls[0], outcome{kind: failed, err: &Error{Code: CodeInvalid, Message: fileErr.Error()}})
 	case err != nil:
@@ -53,7 +60,7 @@ func (s *Service) runTrain(ctx context.Context, k Key, ls []Land) error {
 	if trialErr.kind != proceed {
 		return s.conclude(&ls[0], trialErr)
 	}
-	ms = s.policies(ctx, reader, k.Repo, checks, ms)
+	ms = s.policies(ctx, reader, k, checks, ms)
 	judged := slices.ContainsFunc(ms, func(m *member) bool { return len(m.checks) > 0 })
 	if judged {
 		if err := s.starts(ctx, reader, tip.Commit, ms); err != nil {
@@ -155,11 +162,11 @@ func trialFailure(s *Service, item api.TrialItem) outcome {
 // by the check file of the trial commit before it, because a member that changes the file changes the rules of the members
 // after it. A member that has no readable file, or needs a runner that the repository lacks, ends the train before it: it is
 // judged when it is first, against the real tip.
-func (s *Service) policies(ctx context.Context, reader *client.Client, repo string, first []check.Check, ms []*member) []*member {
+func (s *Service) policies(ctx context.Context, reader *client.Client, k Key, first []check.Check, ms []*member) []*member {
 	ms[0].checks = first
 	for i := 1; i < len(ms); i++ {
-		checks, err := requiredChecks(ctx, reader, repo, ms[i-1].item.Tip)
-		if _, hasRunner := s.checks.Runner(repo); err != nil || len(checks) > 0 && !hasRunner {
+		checks, err := requiredChecks(ctx, reader, k.Repo, ms[i-1].item.Tip)
+		if _, hasRunner := s.checks.Runner(k.Repo); err != nil || len(checks) > 0 && !hasRunner || s.missingCheck(k, checks) != "" {
 			return ms[:i]
 		}
 		ms[i].checks = checks

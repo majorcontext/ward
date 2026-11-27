@@ -23,6 +23,7 @@ const (
 const (
 	CodeConflict    = wardapi.CodeLandConflict
 	CodeInvalid     = wardapi.CodeLandInvalid
+	CodeRequired    = wardapi.CodeRequiredMissing
 	CodeTimeout     = wardapi.CodeLandTimeout
 	CodeCheckFailed = wardapi.CodeCheckFailed
 	CodeStale       = wardapi.CodeLandStale

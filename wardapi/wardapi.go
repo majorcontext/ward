@@ -17,6 +17,7 @@ const (
 	CodeLandConflict     Code = "land_conflict"
 	CodeLandInvalid      Code = "land_invalid"
 	CodeRefNotAllowed    Code = "ref_not_allowed"
+	CodeRequiredMissing  Code = "required_check_missing"
 	CodeLandIDInUse      Code = "land_id_in_use"
 	CodeLandTimeout      Code = "land_timeout"
 	CodeLeaseLost        Code = "lease_lost"
