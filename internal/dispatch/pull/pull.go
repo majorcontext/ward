@@ -111,7 +111,7 @@ func (q *Queue) Lease(ctx context.Context, kid string, iso runnerproto.Isolation
 		}
 		if ok {
 			return runnerproto.Lease{LeaseID: id, TTLSeconds: int(LeaseTTL / time.Second), Request: runnerproto.Request{
-				RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env}}, true, nil
+				RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Commit: req.Commit, Check: req.Check, CheckHash: req.Hash, Env: req.Env, Base: req.Base, BaseTree: req.BaseTree}}, true, nil
 		}
 		select {
 		case <-wake:

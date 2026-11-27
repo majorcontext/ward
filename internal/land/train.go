@@ -21,6 +21,8 @@ type member struct {
 	base string
 	gen  int64
 	item api.TrialItem
+	// from is the commit that the change starts from and fromTree is its tree: the tip for the first member, the trial commit of the member before for a later one.
+	from, fromTree string
 	// checks are the required checks that judge the member: the ones of the check file of the commit that it replaces.
 	checks []check.Check
 }
@@ -54,6 +56,9 @@ func (s *Service) runTrain(ctx context.Context, k Key, ls []Land) error {
 	ms = s.policies(ctx, reader, k.Repo, checks, ms)
 	judged := slices.ContainsFunc(ms, func(m *member) bool { return len(m.checks) > 0 })
 	if judged {
+		if err := s.starts(ctx, reader, tip.Commit, ms); err != nil {
+			return s.conclude(ms[0].l, s.refusal(err))
+		}
 		if err := s.begin(ctx, ms); err != nil {
 			return s.conclude(ms[0].l, s.storeFailure(err))
 		}
@@ -160,6 +165,20 @@ func (s *Service) policies(ctx context.Context, reader *client.Client, repo stri
 		ms[i].checks = checks
 	}
 	return ms
+}
+
+// starts sets the commit and the tree that each member starts from.
+func (s *Service) starts(ctx context.Context, reader *client.Client, tip string, ms []*member) error {
+	c, err := reader.Commit(ctx, tip)
+	if err != nil {
+		return err
+	}
+	from, fromTree := tip, c.Tree
+	for _, m := range ms {
+		m.from, m.fromTree = from, fromTree
+		from, fromTree = m.item.Tip, m.item.Tree
+	}
+	return nil
 }
 
 // begin sets each member to checking on the tree of its trial. A member that was checking this tree keeps its mark for the

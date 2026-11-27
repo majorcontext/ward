@@ -150,7 +150,7 @@ func (m *Manager) Verdict(ctx context.Context, repo, tree string, c Check, mark 
 }
 
 // Ensure makes sure that a request for check c of tree is open, and starts its delivery when it opens one.
-func (m *Manager) Ensure(ctx context.Context, repo, tree, commit string, c Check) error {
+func (m *Manager) Ensure(ctx context.Context, repo, tree, commit, base, baseTree string, c Check) error {
 	r, ok := m.runners[repo]
 	if !ok {
 		return ErrNoRunner
@@ -159,7 +159,7 @@ func (m *Manager) Ensure(ctx context.Context, repo, tree, commit string, c Check
 	if err != nil {
 		return err
 	}
-	req, created, err := m.store.OpenRequest(ctx, Request{ID: id, Repo: repo, Tree: tree, Commit: commit, Check: c, Hash: c.Hash(), Env: r.Env, Open: true})
+	req, created, err := m.store.OpenRequest(ctx, Request{ID: id, Repo: repo, Tree: tree, Commit: commit, Check: c, Hash: c.Hash(), Env: r.Env, Base: base, BaseTree: baseTree, Open: true})
 	if err != nil {
 		return err
 	}

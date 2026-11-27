@@ -23,7 +23,9 @@
         "commit": {"type": "string", "description": "A commit of motte whose tree is tree."},
         "check": {"$ref": "#/$defs/Check"},
         "check_hash": {"type": "string", "description": "Lowercase hex SHA-256 of the compact JSON object of check, in the key order name, run, timeout_seconds, with no HTML escaping."},
-        "env": {"type": "string", "description": "The env text of the runner entry. May be empty."}
+        "env": {"type": "string", "description": "The env text of the runner entry. May be empty."},
+        "base": {"type": "string", "description": "Optional. The commit that the change under check starts from: the tip of the target ref for the first land of a train, the trial commit of the land before it for a later land. A runner that does not know the field ignores it."},
+        "base_tree": {"type": "string", "description": "Optional. The git tree ID of base."}
       }
     },
     "Result": {

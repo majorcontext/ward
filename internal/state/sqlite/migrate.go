@@ -44,6 +44,8 @@ var migrations = []string{
 CREATE INDEX IF NOT EXISTS check_requests_open ON check_requests (open);`,
 	`ALTER TABLE lands ADD COLUMN ended_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE check_requests ADD COLUMN closed_at INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE check_requests ADD COLUMN base TEXT NOT NULL DEFAULT '';
+ALTER TABLE check_requests ADD COLUMN base_tree TEXT NOT NULL DEFAULT '';`,
 }
 
 func migrate(ctx context.Context, db *sql.DB, now time.Time) error {

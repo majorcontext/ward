@@ -152,7 +152,7 @@ func (s *Service) judge(ctx context.Context, repo string, ms []*member) (pass in
 						continue
 					}
 					asked[key] = true
-					if err := s.checks.Ensure(ctx, repo, m.item.Tree, m.item.Tip, c); err != nil {
+					if err := s.checks.Ensure(ctx, repo, m.item.Tree, m.item.Tip, m.from, m.fromTree, c); err != nil {
 						return 0, s.storeFailure(err)
 					}
 				}

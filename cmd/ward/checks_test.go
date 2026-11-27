@@ -606,3 +606,26 @@ func TestLandFailsAFirstLandThatConflictsAndStillLandsTheRestOfTheTrain(t *testi
 		t.Fatalf("conflicting land = %+v", conflict)
 	}
 }
+
+func TestCheckRequestsCarryTheCommitAndTreeThatTheChangeStartsFrom(t *testing.T) {
+	h, run := newLandHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	base := h.seedChecked(unitChecks)
+	first, req, queued := h.queueBehindACheck(p, run, base, "b", "c")
+	if req.Base != base || req.BaseTree != h.treeOf(base) {
+		t.Fatalf("first request base = %q %q, want the tip %q and its tree", req.Base, req.BaseTree, base)
+	}
+	p.answer(req, "pass", "ok")
+	a := h.awaitLand(p, first.ID, "landed")
+
+	reqs := []runnerRequest{run.next(), run.next()}
+	if reqs[0].Base != a.Tip || reqs[0].BaseTree != h.treeOf(a.Tip) {
+		t.Fatalf("request of the first member of the train = %+v, want the tip %q", reqs[0], a.Tip)
+	}
+	if reqs[1].Base != reqs[0].Commit || reqs[1].BaseTree != reqs[0].Tree {
+		t.Fatalf("request of the second member = %+v, want the trial commit of the first, %+v", reqs[1], reqs[0])
+	}
+	p.answer(reqs[0], "pass", "ok")
+	p.answer(reqs[1], "pass", "ok")
+	h.awaitLand(p, queued[1].ID, "landed")
+}

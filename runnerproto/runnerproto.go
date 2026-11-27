@@ -53,6 +53,9 @@ type Request struct {
 	Check     Check  `json:"check"`
 	CheckHash string `json:"check_hash"`
 	Env       string `json:"env"`
+	// Base is the commit that the change under check starts from, and BaseTree is its tree. They are empty when ward does not send them.
+	Base     string `json:"base,omitempty"`
+	BaseTree string `json:"base_tree,omitempty"`
 }
 
 // Status is the outcome that a runner reports.

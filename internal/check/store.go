@@ -24,6 +24,8 @@ type Request struct {
 	Check      Check
 	Hash       string
 	Env        string
+	Base       string
+	BaseTree   string
 	AcceptedAt time.Time
 	Open       bool
 }

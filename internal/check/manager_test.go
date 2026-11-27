@@ -101,7 +101,7 @@ func TestLateRequestIsSentAgainAfterAStoreReadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { cancel(); m.Wait() }()
-	if err := m.Ensure(ctx, "r", "tree", "commit", check.Check{Name: "unit", Run: []string{"x"}, TimeoutSeconds: 60}); err != nil {
+	if err := m.Ensure(ctx, "r", "tree", "commit", "", "", check.Check{Name: "unit", Run: []string{"x"}, TimeoutSeconds: 60}); err != nil {
 		t.Fatal(err)
 	}
 	late := 60*time.Second + 10*time.Minute
@@ -140,7 +140,7 @@ func TestPullRequestIsNotReplacedWhileQueuedOrLeased(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	_ = m.Start(ctx)
 	defer func() { cancel(); m.Wait() }()
-	_ = m.Ensure(ctx, "r", "tree", "commit", check.Check{Name: "unit", Run: []string{"x"}, TimeoutSeconds: 60})
+	_ = m.Ensure(ctx, "r", "tree", "commit", "", "", check.Check{Name: "unit", Run: []string{"x"}, TimeoutSeconds: 60})
 	open := func() string {
 		reqs, _ := st.OpenRequests(ctx)
 		if len(reqs) != 1 {

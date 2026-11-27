@@ -47,7 +47,7 @@ CREATE INDEX IF NOT EXISTS check_leases_request ON check_leases (request_id, seq
 
 var _ check.Store = (*Store)(nil)
 
-const requestColumns = `id, repo, tree, commit_sha, check_json, check_hash, env, accepted_at, open`
+const requestColumns = `id, repo, tree, commit_sha, check_json, check_hash, env, accepted_at, open, base, base_tree`
 
 type scanner interface{ Scan(...any) error }
 
@@ -55,7 +55,7 @@ func scanRequest(row scanner) (check.Request, error) {
 	var r check.Request
 	var raw string
 	var accepted int64
-	if err := row.Scan(&r.ID, &r.Repo, &r.Tree, &r.Commit, &raw, &r.Hash, &r.Env, &accepted, &r.Open); err != nil {
+	if err := row.Scan(&r.ID, &r.Repo, &r.Tree, &r.Commit, &raw, &r.Hash, &r.Env, &accepted, &r.Open, &r.Base, &r.BaseTree); err != nil {
 		return check.Request{}, err
 	}
 	r.AcceptedAt = fromMicro(accepted)
@@ -67,8 +67,8 @@ func insertRequest(ctx context.Context, tx *sql.Tx, r check.Request) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO check_requests (`+requestColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-		r.ID, r.Repo, r.Tree, r.Commit, string(raw), r.Hash, r.Env, micro(r.AcceptedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO check_requests (`+requestColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		r.ID, r.Repo, r.Tree, r.Commit, string(raw), r.Hash, r.Env, micro(r.AcceptedAt), r.Base, r.BaseTree)
 	return err
 }
 
