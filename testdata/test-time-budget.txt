@@ -12,6 +12,10 @@ calibrate 0.055
 count internal/seamcheck processes 2
 leaf 10
 package default 10
+# cmd/ward holds the end-to-end tests of the land train, the mirror and the seed. They run a real motte test server and
+# git, about 460 git processes and 40 s of CPU on the reference runner, which keeps the package at 11 s with full
+# parallelism. The test-side costs are already cut; the rest is the git work of the mirror and the seed in the product.
+package cmd/ward 14
 # The container and gvisor suites start a container for each case and pull the test image once. A run of the two takes a few seconds with a warm image.
 package internal/runner/sandbox/container 40
 package internal/runner/sandbox/gvisor 40
