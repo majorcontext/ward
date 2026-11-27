@@ -84,9 +84,30 @@ func Run(t *testing.T, newStore func(t *testing.T) check.Store) {
 		if n, err := s.MaxResultID(ctx); err != nil || n < 2 {
 			t.Fatalf("max id = %d, %v", n, err)
 		}
-		got, err := s.Results(ctx, "r", "a", "h", "e")
+		got, err := s.Results(ctx, "r", "a", "h", "e", "")
 		if err != nil || len(got) != 1 || got[0].RequestID != "a" || got[0].Status != check.StatusFail {
 			t.Fatalf("results = %+v, %v", got, err)
+		}
+	})
+	t.Run("a result of a change key belongs to its base tree only", func(t *testing.T) {
+		s := newStore(t)
+		a, b := req("a", "t"), req("b", "t")
+		a.KeyBase, b.KeyBase = "x", "y"
+		for _, r := range []check.Request{a, b} {
+			if _, created, err := s.OpenRequest(ctx, r); err != nil || !created {
+				t.Fatalf("open %s: created %v, err %v", r.ID, created, err)
+			}
+		}
+		pass := res("a", "t", check.StatusPass)
+		pass.KeyBase = "x"
+		if _, err := s.AddResult(ctx, pass); err != nil {
+			t.Fatal(err)
+		}
+		want(t, openIDs(t, s), "b")
+		for key, n := range map[string]int{"x": 1, "y": 0, "": 0} {
+			if got, err := s.Results(ctx, "r", "t", "h", "e", key); err != nil || len(got) != n {
+				t.Fatalf("results for base %q = %+v, %v; want %d", key, got, err, n)
+			}
 		}
 	})
 	t.Run("a pass closes the other open requests of its key", func(t *testing.T) {

@@ -29,6 +29,18 @@ type rawCheck struct {
 	Name           string          `json:"name"`
 	Run            []*string       `json:"run"`
 	TimeoutSeconds json.RawMessage `json:"timeout_seconds"`
+	Key            json.RawMessage `json:"key"`
+}
+
+// KeyChange is the value of the key of a check whose result belongs to the base tree and the tree of a change.
+const KeyChange = "change"
+
+// KeyBase returns the part of the result key that comes from the base tree: the base tree for a change key, else empty.
+func KeyBase(c Check, baseTree string) string {
+	if c.Key == KeyChange {
+		return baseTree
+	}
+	return ""
 }
 
 // isNull reports whether raw is the JSON literal null.
@@ -86,7 +98,7 @@ func parseCheck(raw json.RawMessage) (Check, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if isNull(raw) || dec.Decode(&c) != nil {
-		return Check{}, fmt.Errorf("%s does not parse: a check must be an object with name, run and timeout_seconds", FilePath)
+		return Check{}, fmt.Errorf("%s does not parse: a check must be an object with name, run, timeout_seconds and key", FilePath)
 	}
 	run := make([]string, 0, len(c.Run))
 	for _, r := range c.Run {
@@ -101,6 +113,16 @@ func parseCheck(raw json.RawMessage) (Check, error) {
 			return Check{}, fmt.Errorf("check %q: timeout_seconds must be 1 to %d", c.Name, maxTimeout)
 		}
 	}
+	key := ""
+	if c.Key != nil {
+		var k string
+		if err := json.Unmarshal(c.Key, &k); err != nil || k != "tree" && k != KeyChange {
+			return Check{}, fmt.Errorf("check %q: key must be \"tree\" or \"change\"", c.Name)
+		}
+		if k == KeyChange {
+			key = k
+		}
+	}
 	switch {
 	case !nameRE.MatchString(c.Name):
 		return Check{}, fmt.Errorf("check %q: name must be 1 to 40 characters of a-z 0-9 -", c.Name)
@@ -109,7 +131,7 @@ func parseCheck(raw json.RawMessage) (Check, error) {
 	case timeout < 1 || timeout > maxTimeout:
 		return Check{}, fmt.Errorf("check %q: timeout_seconds must be 1 to %d", c.Name, maxTimeout)
 	}
-	return Check{Name: c.Name, Run: run, TimeoutSeconds: timeout}, nil
+	return Check{Name: c.Name, Run: run, TimeoutSeconds: timeout, Key: key}, nil
 }
 
 // ErrNoRunner means that no runner is configured for the repository.

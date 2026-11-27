@@ -23,6 +23,7 @@ func TestOpenMigratesAFileOfTheEarlierRelease(t *testing.T) {
 		`INSERT INTO lands (id, repo, ref, ended, body) VALUES ('l1', 'r', 'main', 1, '{"id":"l1","repo":"r","ref":"main","state":"landed"}')`,
 		`INSERT INTO check_requests (id, repo, tree, commit_sha, check_json, check_hash, env, open) VALUES ('c1', 'r', 't', 'x', '{}', 'h', 'e', 0)`,
 		`INSERT INTO mirrors (name) VALUES ('m')`,
+		`INSERT INTO check_results (request_id, repo, tree, check_hash, env, status, summary, log_url) VALUES ('c1', 'r', 't', 'h', 'e', 'pass', '', '')`,
 	} {
 		if _, err := old.Exec(q); err != nil {
 			t.Fatal(err)
@@ -42,6 +43,9 @@ func TestOpenMigratesAFileOfTheEarlierRelease(t *testing.T) {
 	}
 	if l, ok, err := s.Land(t.Context(), "l1"); err != nil || !ok || l.State != land.Landed {
 		t.Fatalf("land = %+v, %v, %v", l, ok, err)
+	}
+	if got, err := s.Results(t.Context(), "r", "t", "h", "e", ""); err != nil || len(got) != 1 || got[0].Status != "pass" {
+		t.Fatalf("result of the tree key = %+v, %v: a pass from before the upgrade must stay valid", got, err)
 	}
 	if ok, err := s.HasMirror(t.Context(), "m"); err != nil || !ok {
 		t.Fatalf("mirror = %v, %v", ok, err)

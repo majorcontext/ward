@@ -17,15 +17,17 @@ const (
 
 // Request is one check request to a runner. It is open until a result or a newer request for its key ends it.
 type Request struct {
-	ID         string
-	Repo       string
-	Tree       string
-	Commit     string
-	Check      Check
-	Hash       string
-	Env        string
-	Base       string
-	BaseTree   string
+	ID       string
+	Repo     string
+	Tree     string
+	Commit   string
+	Check    Check
+	Hash     string
+	Env      string
+	Base     string
+	BaseTree string
+	// KeyBase is the base tree of the result key of a change-keyed check, and empty for the default key.
+	KeyBase    string
 	AcceptedAt time.Time
 	Open       bool
 }
@@ -38,6 +40,7 @@ type Result struct {
 	Tree      string
 	Hash      string
 	Env       string
+	KeyBase   string
 	Status    Status
 	Summary   string
 	LogURL    string
@@ -63,7 +66,7 @@ type Store interface {
 	// It returns false and changes nothing when the request already has a result.
 	AddResult(ctx context.Context, r Result) (bool, error)
 	// Results returns the results of one key, oldest first.
-	Results(ctx context.Context, repo, tree, hash, env string) ([]Result, error)
+	Results(ctx context.Context, repo, tree, hash, env, keyBase string) ([]Result, error)
 	MaxResultID(ctx context.Context) (int64, error)
 	// Lease gives kid, under leaseID, the oldest open request of one of repos that has no live lease, until the time until.
 	// A lease that passed its time is dead, so its request is leasable again with the same ID. The returned request has

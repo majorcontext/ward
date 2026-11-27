@@ -184,6 +184,7 @@ func TestLandFailsWithLandInvalidWhenTheCheckFileOrTheRunnerIsMissing(t *testing
 	}{
 		"a rule of the file is broken":  {`{"checks":[{"name":"Unit","run":["x"]}]}`, true, "name must be"},
 		"the file has an unknown field": {`{"checks":[],"extra":1}`, true, "does not parse"},
+		"the key is unknown":            {`{"checks":[{"name":"a","run":["x"],"key":"branch"}]}`, true, `key must be "tree" or "change"`},
 		"no runner for the repository":  {unitChecks, false, "no runner"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -628,4 +629,33 @@ func TestCheckRequestsCarryTheCommitAndTreeThatTheChangeStartsFrom(t *testing.T)
 	p.answer(reqs[0], "pass", "ok")
 	p.answer(reqs[1], "pass", "ok")
 	h.awaitLand(p, queued[1].ID, "landed")
+}
+
+func TestLandReusesAChangeKeyedPassOnlyForTheSameBaseTreeAndTree(t *testing.T) {
+	h, run := newLandHarness(t), newRunner(t)
+	p := h.startWard(wardOpts{noMirror: true, runner: run})
+	base := h.seedChecked(`{"checks":[{"name":"unit","run":["make","test"],"timeout_seconds":60,"key":"change"}]}`)
+	h.branchFrom(base, "feature/x", "c.txt", "c\n")
+	req := run.next
+	first := h.postLand(p, "main", "feature/x", nil)
+	r1 := req()
+	p.answer(r1, "pass", "ok")
+	x := h.awaitLand(p, first.ID, "landed")
+
+	empty := func(name string) string {
+		h.push("feature/"+name, h.commitOn(x.Tip, h.hist.files[x.Tip], name), false)
+		return h.postLand(p, "main", "feature/"+name, nil).ID
+	}
+	e1 := empty("e1")
+	r2 := req()
+	if r2.Tree != r1.Tree || r2.BaseTree == r1.BaseTree {
+		t.Fatalf("requests %+v then %+v: the same result tree on another base tree needs its own check", r1, r2)
+	}
+	p.answer(r2, "pass", "ok")
+	y := h.awaitLand(p, e1, "landed")
+	h.push("feature/e2", h.commitOn(y.Tip, h.hist.files[y.Tip], "e2"), false)
+	h.awaitLand(p, h.postLand(p, "main", "feature/e2", nil).ID, "landed")
+	if len(run.extra()) != 0 {
+		t.Fatal("a pass for the same base tree and tree was asked for again")
+	}
 }

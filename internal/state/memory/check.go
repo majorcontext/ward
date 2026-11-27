@@ -10,7 +10,7 @@ import (
 
 func (s *Store) keyHasPass(r check.Request) bool {
 	for _, res := range s.results {
-		if res.Repo == r.Repo && res.Tree == r.Tree && res.Hash == r.Hash && res.Env == r.Env && res.Status == check.StatusPass {
+		if res.Repo == r.Repo && res.Tree == r.Tree && res.Hash == r.Hash && res.Env == r.Env && res.KeyBase == r.KeyBase && res.Status == check.StatusPass {
 			return true
 		}
 	}
@@ -35,7 +35,7 @@ func (s *Store) insertRequest(r check.Request) {
 func (s *Store) OpenRequest(_ context.Context, r check.Request) (check.Request, bool, error) {
 	defer s.lock()()
 	for _, cur := range s.requests {
-		if cur.Open && cur.Repo == r.Repo && cur.Tree == r.Tree && cur.Hash == r.Hash && cur.Env == r.Env {
+		if cur.Open && cur.Repo == r.Repo && cur.Tree == r.Tree && cur.Hash == r.Hash && cur.Env == r.Env && cur.KeyBase == r.KeyBase {
 			return clone(*cur), false, nil
 		}
 	}
@@ -102,7 +102,7 @@ func (s *Store) AddResult(_ context.Context, r check.Result) (bool, error) {
 	}
 	if r.Status == check.StatusPass {
 		for _, cur := range s.requests {
-			if cur.Repo == r.Repo && cur.Tree == r.Tree && cur.Hash == r.Hash && cur.Env == r.Env {
+			if cur.Repo == r.Repo && cur.Tree == r.Tree && cur.Hash == r.Hash && cur.Env == r.Env && cur.KeyBase == r.KeyBase {
 				cur.Open = false
 			}
 		}
@@ -110,11 +110,11 @@ func (s *Store) AddResult(_ context.Context, r check.Result) (bool, error) {
 	return true, nil
 }
 
-func (s *Store) Results(_ context.Context, repo, tree, hash, env string) ([]check.Result, error) {
+func (s *Store) Results(_ context.Context, repo, tree, hash, env, keyBase string) ([]check.Result, error) {
 	defer s.lock()()
 	var out []check.Result
 	for _, r := range s.results {
-		if r.Repo == repo && r.Tree == tree && r.Hash == hash && r.Env == env {
+		if r.Repo == repo && r.Tree == tree && r.Hash == hash && r.Env == env && r.KeyBase == keyBase {
 			out = append(out, r)
 		}
 	}

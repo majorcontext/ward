@@ -47,7 +47,7 @@ CREATE INDEX IF NOT EXISTS check_leases_request ON check_leases (request_id, seq
 
 var _ check.Store = (*Store)(nil)
 
-const requestColumns = `id, repo, tree, commit_sha, check_json, check_hash, env, accepted_at, open, base, base_tree`
+const requestColumns = `id, repo, tree, commit_sha, check_json, check_hash, env, accepted_at, open, base, base_tree, key_base`
 
 type scanner interface{ Scan(...any) error }
 
@@ -55,7 +55,7 @@ func scanRequest(row scanner) (check.Request, error) {
 	var r check.Request
 	var raw string
 	var accepted int64
-	if err := row.Scan(&r.ID, &r.Repo, &r.Tree, &r.Commit, &raw, &r.Hash, &r.Env, &accepted, &r.Open, &r.Base, &r.BaseTree); err != nil {
+	if err := row.Scan(&r.ID, &r.Repo, &r.Tree, &r.Commit, &raw, &r.Hash, &r.Env, &accepted, &r.Open, &r.Base, &r.BaseTree, &r.KeyBase); err != nil {
 		return check.Request{}, err
 	}
 	r.AcceptedAt = fromMicro(accepted)
@@ -67,8 +67,8 @@ func insertRequest(ctx context.Context, tx *sql.Tx, r check.Request) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO check_requests (`+requestColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		r.ID, r.Repo, r.Tree, r.Commit, string(raw), r.Hash, r.Env, micro(r.AcceptedAt), r.Base, r.BaseTree)
+	_, err = tx.ExecContext(ctx, `INSERT INTO check_requests (`+requestColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		r.ID, r.Repo, r.Tree, r.Commit, string(raw), r.Hash, r.Env, micro(r.AcceptedAt), r.Base, r.BaseTree, r.KeyBase)
 	return err
 }
 
@@ -76,7 +76,7 @@ func (s *Store) OpenRequest(ctx context.Context, r check.Request) (check.Request
 	out, created := r, false
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		cur, err := scanRequest(tx.QueryRowContext(ctx, `SELECT `+requestColumns+` FROM check_requests
-			WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? AND open = 1 ORDER BY rowid LIMIT 1`, r.Repo, r.Tree, r.Hash, r.Env))
+			WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? AND key_base = ? AND open = 1 ORDER BY rowid LIMIT 1`, r.Repo, r.Tree, r.Hash, r.Env, r.KeyBase))
 		if err == nil {
 			out = cur
 			return nil
@@ -85,8 +85,8 @@ func (s *Store) OpenRequest(ctx context.Context, r check.Request) (check.Request
 			return err
 		}
 		var passed int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM check_results WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? AND status = 'pass'`,
-			r.Repo, r.Tree, r.Hash, r.Env).Scan(&passed); err != nil || passed > 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM check_results WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? AND key_base = ? AND status = 'pass'`,
+			r.Repo, r.Tree, r.Hash, r.Env, r.KeyBase).Scan(&passed); err != nil || passed > 0 {
 			return err
 		}
 		created = true
@@ -124,7 +124,7 @@ func (s *Store) Supersede(ctx context.Context, old string, next check.Request, n
 	done := false
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		var open, passed int
-		if err := tx.QueryRowContext(ctx, `SELECT open, (SELECT COUNT(*) FROM check_results WHERE repo = r.repo AND tree = r.tree AND check_hash = r.check_hash AND env = r.env AND status = 'pass')
+		if err := tx.QueryRowContext(ctx, `SELECT open, (SELECT COUNT(*) FROM check_results WHERE repo = r.repo AND tree = r.tree AND check_hash = r.check_hash AND env = r.env AND key_base = r.key_base AND status = 'pass')
 			FROM check_requests r WHERE id = ?`, old).Scan(&open, &passed); err != nil {
 			return err
 		}
@@ -150,9 +150,9 @@ func (s *Store) Supersede(ctx context.Context, old string, next check.Request, n
 func (s *Store) AddResult(ctx context.Context, r check.Result) (bool, error) {
 	added := false
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `INSERT INTO check_results (request_id, repo, tree, check_hash, env, status, summary, log_url)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING`,
-			r.RequestID, r.Repo, r.Tree, r.Hash, r.Env, string(r.Status), r.Summary, r.LogURL)
+		res, err := tx.ExecContext(ctx, `INSERT INTO check_results (request_id, repo, tree, check_hash, env, key_base, status, summary, log_url)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING`,
+			r.RequestID, r.Repo, r.Tree, r.Hash, r.Env, r.KeyBase, string(r.Status), r.Summary, r.LogURL)
 		if err != nil {
 			return err
 		}
@@ -164,23 +164,23 @@ func (s *Store) AddResult(ctx context.Context, r check.Result) (bool, error) {
 			return err
 		}
 		if r.Status == check.StatusPass {
-			_, err = tx.ExecContext(ctx, `UPDATE check_requests SET open = 0, closed_at = ? WHERE open = 1 AND repo = ? AND tree = ? AND check_hash = ? AND env = ?`, micro(s.now()), r.Repo, r.Tree, r.Hash, r.Env)
+			_, err = tx.ExecContext(ctx, `UPDATE check_requests SET open = 0, closed_at = ? WHERE open = 1 AND repo = ? AND tree = ? AND check_hash = ? AND env = ? AND key_base = ?`, micro(s.now()), r.Repo, r.Tree, r.Hash, r.Env, r.KeyBase)
 		}
 		return err
 	})
 	return added, err
 }
 
-func (s *Store) Results(ctx context.Context, repo, tree, hash, env string) ([]check.Result, error) {
+func (s *Store) Results(ctx context.Context, repo, tree, hash, env, keyBase string) ([]check.Result, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, request_id, status, summary, log_url FROM check_results
-		WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? ORDER BY id`, repo, tree, hash, env)
+		WHERE repo = ? AND tree = ? AND check_hash = ? AND env = ? AND key_base = ? ORDER BY id`, repo, tree, hash, env, keyBase)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []check.Result
 	for rows.Next() {
-		r := check.Result{Repo: repo, Tree: tree, Hash: hash, Env: env}
+		r := check.Result{Repo: repo, Tree: tree, Hash: hash, Env: env, KeyBase: keyBase}
 		var status string
 		if err := rows.Scan(&r.ID, &r.RequestID, &status, &r.Summary, &r.LogURL); err != nil {
 			return nil, err

@@ -46,6 +46,12 @@ CREATE INDEX IF NOT EXISTS check_requests_open ON check_requests (open);`,
 ALTER TABLE check_requests ADD COLUMN closed_at INTEGER NOT NULL DEFAULT 0;`,
 	`ALTER TABLE check_requests ADD COLUMN base TEXT NOT NULL DEFAULT '';
 ALTER TABLE check_requests ADD COLUMN base_tree TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE check_requests ADD COLUMN key_base TEXT NOT NULL DEFAULT '';
+ALTER TABLE check_results ADD COLUMN key_base TEXT NOT NULL DEFAULT '';
+CREATE INDEX check_requests_key_base ON check_requests (repo, tree, check_hash, env, key_base, open);
+CREATE INDEX check_results_key_base ON check_results (repo, tree, check_hash, env, key_base);
+DROP INDEX check_requests_key;
+DROP INDEX check_results_key;`,
 }
 
 func migrate(ctx context.Context, db *sql.DB, now time.Time) error {

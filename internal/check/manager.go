@@ -117,12 +117,12 @@ func (m *Manager) Runner(repo string) (Runner, bool) {
 func (m *Manager) Mark(ctx context.Context) (int64, error) { return m.store.MaxResultID(ctx) }
 
 // Verdict reads the state of check c for tree. A pass is final. A fail counts only when it is after mark.
-func (m *Manager) Verdict(ctx context.Context, repo, tree string, c Check, mark int64) (Verdict, error) {
+func (m *Manager) Verdict(ctx context.Context, repo, tree, baseTree string, c Check, mark int64) (Verdict, error) {
 	r, ok := m.runners[repo]
 	if !ok {
 		return Verdict{}, ErrNoRunner
 	}
-	results, err := m.store.Results(ctx, repo, tree, c.Hash(), r.Env)
+	results, err := m.store.Results(ctx, repo, tree, c.Hash(), r.Env, KeyBase(c, baseTree))
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -159,7 +159,7 @@ func (m *Manager) Ensure(ctx context.Context, repo, tree, commit, base, baseTree
 	if err != nil {
 		return err
 	}
-	req, created, err := m.store.OpenRequest(ctx, Request{ID: id, Repo: repo, Tree: tree, Commit: commit, Check: c, Hash: c.Hash(), Env: r.Env, Base: base, BaseTree: baseTree, Open: true})
+	req, created, err := m.store.OpenRequest(ctx, Request{ID: id, Repo: repo, Tree: tree, Commit: commit, Check: c, Hash: c.Hash(), Env: r.Env, Base: base, BaseTree: baseTree, KeyBase: KeyBase(c, baseTree), Open: true})
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func (m *Manager) Post(ctx context.Context, repo, kid string, p Posted) error {
 	} else if !leased {
 		return ErrNotRegistered
 	}
-	added, err := m.store.AddResult(ctx, Result{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Hash: req.Hash, Env: req.Env, Status: p.Status, Summary: p.Summary, LogURL: p.LogURL})
+	added, err := m.store.AddResult(ctx, Result{RequestID: req.ID, Repo: req.Repo, Tree: req.Tree, Hash: req.Hash, Env: req.Env, KeyBase: req.KeyBase, Status: p.Status, Summary: p.Summary, LogURL: p.LogURL})
 	if err != nil {
 		return err
 	}

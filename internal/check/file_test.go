@@ -41,6 +41,8 @@ func TestParseFile(t *testing.T) {
 		{"name length", `{"checks":[{"name":"` + long + `","run":["x"]}]}`, "name must be", 0},
 		{"name repeats", `{"checks":[{"name":"a","run":["x"]},{"name":"a","run":["y"]}]}`, "name repeats", 0},
 		{"empty run", `{"checks":[{"name":"a","run":[]}]}`, "run must be", 0},
+		{"unknown key", `{"checks":[{"name":"a","run":["x"],"key":"branch"}]}`, "key must be", 0},
+		{"null key", `{"checks":[{"name":"a","run":["x"],"key":null}]}`, "key must be", 0},
 		{"timeout zero", `{"checks":[{"name":"a","run":["x"],"timeout_seconds":0}]}`, "timeout_seconds", 0},
 		{"timeout too long", `{"checks":[{"name":"a","run":["x"],"timeout_seconds":3601}]}`, "timeout_seconds", 0},
 	}
@@ -84,5 +86,20 @@ func TestHuJSONFileHasTheChecksAndTheHashOfItsPlainJSONForm(t *testing.T) {
 	}
 	if len(hu) != 1 || len(plain) != 1 || hu[0].Hash() != plain[0].Hash() || hu[0].TimeoutSeconds != 1800 {
 		t.Fatalf("hujson %+v, plain %+v", hu, plain)
+	}
+}
+
+func TestKeyChangesTheHashOnlyWhenItIsChange(t *testing.T) {
+	t.Parallel()
+	parse := func(key string) check.Check {
+		cs, err := check.ParseFile([]byte(`{"checks":[{"name":"a","run":["x"]` + key + `}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cs[0]
+	}
+	plain, tree, change := parse(""), parse(`,"key":"tree"`), parse(`,"key":"change"`)
+	if plain.Hash() != tree.Hash() || plain.Hash() == change.Hash() {
+		t.Fatalf("hashes: no key %s, tree %s, change %s", plain.Hash(), tree.Hash(), change.Hash())
 	}
 }

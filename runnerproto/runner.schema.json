@@ -10,7 +10,8 @@
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z0-9-]{1,40}$"},
         "run": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "The argument vector. The runner runs it at the root of the tree."},
-        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "key": {"const": "change", "description": "Optional. Present only for a check whose result key holds the base tree as well as the tree. The compact JSON object that check_hash covers has the member key last, and only when it is present."}
       }
     },
     "Request": {

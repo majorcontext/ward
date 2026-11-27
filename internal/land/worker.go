@@ -134,7 +134,7 @@ func (s *Service) judge(ctx context.Context, repo string, ms []*member) (pass in
 		for i, m := range ms {
 			dirty, waits := false, false
 			for ci, c := range m.checks {
-				v, err := s.checks.Verdict(ctx, repo, m.item.Tree, c, m.l.Mark)
+				v, err := s.checks.Verdict(ctx, repo, m.item.Tree, m.fromTree, c, m.l.Mark)
 				if err != nil {
 					return 0, s.storeFailure(err)
 				}
@@ -147,7 +147,7 @@ func (s *Service) judge(ctx context.Context, repo string, ms []*member) (pass in
 						Details: map[string]any{"check": c.Name, "summary": v.Result.Summary, "log_url": v.Result.LogURL}}}
 				case v.State == check.Pending && failAt < 0:
 					waits = true
-					key := m.item.Tree + " " + c.Hash()
+					key := m.item.Tree + " " + c.Hash() + " " + check.KeyBase(c, m.fromTree)
 					if asked[key] {
 						continue
 					}

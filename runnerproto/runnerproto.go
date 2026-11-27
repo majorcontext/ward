@@ -32,6 +32,8 @@ type Check struct {
 	Name           string   `json:"name"`
 	Run            []string `json:"run"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
+	// Key is "change" for a check whose result key holds the base tree. It is empty for the default key, the tree alone, and then it is not part of the hash.
+	Key string `json:"key,omitempty"`
 }
 
 // Hash is the SHA-256, in lowercase hex, of the compact JSON object of the check.
