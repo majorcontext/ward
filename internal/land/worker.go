@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -220,6 +221,20 @@ func (s *Service) save(l *Land, st State) error {
 	return nil
 }
 
+// deletable reports whether the branch of a landed land may go: it is no ref that a land may target and no protected ref of
+// motte. A merge grant writes a protected ref, so ward reads the patterns first, and it keeps the branch when it cannot read.
+func (s *Service) deletable(ctx context.Context, l *Land) bool {
+	if l.Branch == l.Ref || s.RefAllowed(l.Branch) {
+		return false
+	}
+	patterns, err := s.client(grant.ScopeOperator, "").ProtectedRefs(ctx, l.Repo)
+	if err != nil {
+		s.log.Warn("land: the branch stays", "land", l.ID, "branch", l.Branch, "error", err.Error())
+		return false
+	}
+	return !slices.ContainsFunc(patterns, func(p string) bool { return RefMatches(p, l.Branch) })
+}
+
 // finish deletes the branch of a landed land, and records the end.
 func (s *Service) finish(l *Land, out outcome) error {
 	ctx := s.ctx
@@ -229,7 +244,12 @@ func (s *Service) finish(l *Land, out outcome) error {
 		if l.Commits == nil {
 			l.Commits = []api.LandedCommit{}
 		}
-		l.BranchDeleted = l.DeleteBranch && merger.DeleteRef(ctx, l.Branch, out.branchGen) == nil
+		if l.DeleteBranch && s.deletable(ctx, l) {
+			err := merger.DeleteRef(ctx, l.Branch, out.branchGen)
+			if l.BranchDeleted = err == nil; err != nil {
+				s.log.Warn("land: the branch stays", "land", l.ID, "branch", l.Branch, "error", err.Error())
+			}
+		}
 		return s.save(l, Landed)
 	}
 	l.Error = out.err

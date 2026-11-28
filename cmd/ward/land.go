@@ -90,15 +90,15 @@ func mergeBase(ctx context.Context, dir, remote, branch, ref string) (string, er
 	return strings.TrimSpace(string(out)), nil
 }
 
-// runLand is `ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
+// runLand is `ward land [--ref REF] [--delete-branch=false] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
 func runLand(ctx context.Context, args []string, getenv func(string) string, now func() time.Time, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("land", flag.ContinueOnError)
 	ref := fs.String("ref", "main", "ref to land on")
-	del := fs.Bool("delete-branch", false, "delete the branch after it landed")
+	del := fs.Bool("delete-branch", true, "delete the branch after it landed; --delete-branch=false keeps it")
 	dir := fs.String("C", ".", "git working tree that holds the branch")
 	remote := fs.String("remote", "origin", "git remote that tracks the repository")
 	baseFlag := fs.String("base", "", "commit that the branch was built on, sent as is")
-	const usage = "WARD_URL=... ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH"
+	const usage = "WARD_URL=... ward land [--ref REF] [--delete-branch=false] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH"
 	if code, done := parseFlags(fs, args, usage, stdout, stderr); done {
 		return code
 	}

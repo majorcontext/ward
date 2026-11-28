@@ -92,7 +92,7 @@ func TestLandCommandReadsAnAcceptedLandAgainAndNeverSendsAPostAgain(t *testing.T
 
 func TestLandCommandSendsTheBaseOfTheCallerAndNoBaseOutsideAGitWorkingTree(t *testing.T) {
 	t.Parallel()
-	for args, want := range map[string]string{"": `{"repo":"native:r","ref":"main","branch":"b","delete_branch":false}`, "--base,x,": `"base":"x"`} {
+	for args, want := range map[string]string{"": `{"repo":"native:r","ref":"main","branch":"b","delete_branch":true}`, "--base,x,": `"base":"x"`} {
 		var got string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			b, _ := io.ReadAll(r.Body)

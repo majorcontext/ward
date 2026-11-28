@@ -30,7 +30,7 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-const rootUsage = "usage: ward [version | runner [install FLAGS] | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]"
+const rootUsage = "usage: ward [version | runner [install FLAGS] | land [--ref REF] [--delete-branch=false] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]"
 
 const shutdownGrace = 10 * time.Second
 

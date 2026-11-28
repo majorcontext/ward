@@ -153,6 +153,37 @@ func TestLandRebasesABranchOntoAProtectedMainAndRefusesOtherTokens(t *testing.T)
 	}
 }
 
+func TestLandKeepsABranchThatALandMayTarget(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	h.branchFrom(base, "other", "c.txt", "c\n")
+	h.protectMain()
+	got := h.awaitLand(p, h.postLand(p, "", "other", map[string]any{"delete_branch": true}).ID, "landed")
+	if got.BranchDeleted {
+		t.Fatal("ward deleted a branch that WARD_LAND_REFS names")
+	}
+	if _, err := h.readClient().Ref(t.Context(), "other"); err != nil {
+		t.Fatalf("branch after the land: %v", err)
+	}
+}
+
+func TestLandKeepsAProtectedBranch(t *testing.T) {
+	h := newLandHarness(t)
+	p := h.startWard(wardOpts{noMirror: true})
+	base := h.seedMain()
+	h.branchFrom(base, "release/x", "c.txt", "c\n")
+	if err := h.operatorClient().SetProtectedRefs(t.Context(), h.repo, []string{"main", "release/*"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.awaitLand(p, h.postLand(p, "", "release/x", map[string]any{"delete_branch": true}).ID, "landed"); got.BranchDeleted {
+		t.Fatal("ward deleted a protected branch")
+	}
+	if _, err := h.readClient().Ref(t.Context(), "release/x"); err != nil {
+		t.Fatalf("branch after the land: %v", err)
+	}
+}
+
 func TestLandFindsTheBaseItselfWithoutOneAndUsesTheBaseThatTheCallerSends(t *testing.T) {
 	h := newLandHarness(t)
 	warned := make(chan struct{}, 4)
