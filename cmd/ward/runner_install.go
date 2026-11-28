@@ -12,7 +12,6 @@ import (
 func runRunnerInstall(args []string, stdout, stderr io.Writer) int {
 	var o install.Options
 	fs := flag.NewFlagSet("ward runner install", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	fs.StringVar(&o.WardURL, "ward-url", "", "base URL of ward")
 	fs.StringVar(&o.Kid, "kid", "", "identity of this runner")
 	fs.StringVar(&o.KeyFile, "key-file", "", "Ed25519 key file; created when absent")
@@ -27,8 +26,8 @@ func runRunnerInstall(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.Binary, "binary", "", "path of the ward binary (default /usr/local/bin/ward)")
 	fs.StringVar(&o.Root, "root", "", "prefix for every written path (default /)")
 	fs.IntVar(&o.Concurrency, "concurrency", 1, "most checks at one time")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, done := parseFlags(fs, args, "ward runner install [FLAGS]", stdout, stderr); done {
+		return code
 	}
 	missing, err := install.Run(o, install.SystemHost(), stdout)
 	if err != nil {

@@ -18,7 +18,7 @@ Non-goals:
 
 | Component | Responsibility | Phase |
 |---|---|---|
-| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land), `ward token` and `ward login` manage the credential of a person (see Human identity), `ward check` runs the checks of a working tree locally (see Local check), `ward runner` runs a check runner (see Standalone runner). It also serves as the `GIT_ASKPASS` helper (see Git access). | W2, W3 |
+| `cmd/ward` | Process: `ward` serves, `ward version` prints the version, `ward land` lands a branch (see Land), `ward token` and `ward login` manage the credential of a person (see Human identity), `ward check` runs the checks of a working tree locally (see Local check), `ward runner` runs a check runner (see Standalone runner). It also serves as the `GIT_ASKPASS` helper (see Git access). A help flag (`-h` or `--help`) of the command or of a subcommand prints the usage to standard output and exits 0. A usage error, such as an unknown flag, prints the error and the usage to standard error and exits 2. | W2, W3 |
 | `internal/config` | Reads the environment (see Service). | W2 |
 | `internal/token` | Caller token verifier (see Caller token). | W2 |
 | `internal/identity` | The seam that turns the credential of a request into claims, its suite and its three implementations, and the per-user token store (see Provider seams). | W5 |

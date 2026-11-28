@@ -30,10 +30,16 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
+const rootUsage = "usage: ward [version | runner [install FLAGS] | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]"
+
 const shutdownGrace = 10 * time.Second
 
 func main() {
 	if mirror.MaybeAskpass(os.Args[1:], os.Stdout) {
+		return
+	}
+	if wantsHelp(os.Args[1:]) {
+		fmt.Println(rootUsage)
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "version" {
@@ -76,7 +82,7 @@ func main() {
 		os.Exit(code)
 	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ward [version | runner [install FLAGS] | land [--ref REF] [--delete-branch] REPO BRANCH | token create|list|revoke | login [--print] | check [--dir PATH] [--only NAME]]")
+		fmt.Fprintln(os.Stderr, rootUsage)
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

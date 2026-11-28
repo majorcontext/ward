@@ -36,7 +36,10 @@ func runLocalCheck(ctx context.Context, args []string, now func() time.Time, std
 	fs.SetOutput(io.Discard)
 	dir := fs.String("dir", ".", "directory that holds .ward/checks.json")
 	only := fs.String("only", "", "run only the check with this name")
-	if fs.Parse(args) != nil || fs.NArg() != 0 {
+	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+		fmt.Fprintln(stdout, localCheckHelp)
+		return 0
+	} else if err != nil || fs.NArg() != 0 {
 		fmt.Fprintln(stderr, localCheckHelp)
 		return 2
 	}

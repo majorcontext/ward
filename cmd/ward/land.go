@@ -93,14 +93,17 @@ func mergeBase(ctx context.Context, dir, remote, branch, ref string) (string, er
 // runLand is `ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH`. It returns the exit code: 0 landed, 1 refused or failed, 2 usage.
 func runLand(ctx context.Context, args []string, getenv func(string) string, now func() time.Time, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("land", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	ref := fs.String("ref", "main", "ref to land on")
 	del := fs.Bool("delete-branch", false, "delete the branch after it landed")
 	dir := fs.String("C", ".", "git working tree that holds the branch")
 	remote := fs.String("remote", "origin", "git remote that tracks the repository")
 	baseFlag := fs.String("base", "", "commit that the branch was built on, sent as is")
-	if fs.Parse(args) != nil || fs.NArg() != 2 || getenv("WARD_URL") == "" {
-		fmt.Fprintln(stderr, "usage: WARD_URL=... ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH")
+	const usage = "WARD_URL=... ward land [--ref REF] [--delete-branch] [-C DIR] [--remote NAME] [--base COMMIT] REPO BRANCH"
+	if code, done := parseFlags(fs, args, usage, stdout, stderr); done {
+		return code
+	}
+	if fs.NArg() != 2 || getenv("WARD_URL") == "" {
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 2
 	}
 	repo, branch := fs.Arg(0), fs.Arg(1)

@@ -31,19 +31,25 @@ func (l *repoList) Set(v string) error { *l = append(*l, v); return nil }
 // runToken is `ward token create|list|revoke`. The service accepts it only with an operator token, which WARD_TOKEN holds
 // or which WARD_KEY_FILE and WARD_KID sign.
 func runToken(ctx context.Context, args []string, getenv func(string) string, now func() time.Time, stdout, stderr io.Writer) int {
-	if len(args) < 1 || getenv("WARD_URL") == "" {
+	if len(args) < 1 {
 		fmt.Fprintln(stderr, "usage: "+tokenUsage)
 		return 2
 	}
+	if isHelp(args[0]) {
+		fmt.Fprintln(stdout, "usage: "+tokenUsage)
+		return 0
+	}
 	fs := flag.NewFlagSet("token "+args[0], flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	principal := fs.String("principal", "", "who the token is for, such as an email")
 	scope := fs.String("scope", "land", "land")
 	ttl := fs.Duration("ttl", 0, "lifetime, 0 for none")
 	var repos repoList
 	fs.Var(&repos, "repo", "repository text such as native:repo_X (repeatable)")
 	want, known := map[string]int{"create": 0, "list": 0, "revoke": 1}[args[0]]
-	if fs.Parse(args[1:]) != nil || !known || fs.NArg() != want {
+	if code, done := parseFlags(fs, args[1:], tokenUsage, stdout, stderr); done {
+		return code
+	}
+	if !known || fs.NArg() != want || getenv("WARD_URL") == "" {
 		fmt.Fprintln(stderr, "usage: "+tokenUsage)
 		return 2
 	}
@@ -133,10 +139,14 @@ func sendToken(ctx context.Context, method, target, tok string, body []byte) ([]
 // WARD_OIDC_CLIENT_ID and saves the token. With --print it prints the saved token.
 func runLogin(ctx context.Context, args []string, getenv func(string) string, now func() time.Time, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	print := fs.Bool("print", false, "print the saved token and exit")
 	scope := fs.String("scope", "", "OAuth scope, default \"openid email\"")
-	if fs.Parse(args) != nil || fs.NArg() != 0 {
+	const usage = "WARD_OIDC_ISSUER=... WARD_OIDC_CLIENT_ID=... ward login [--print] [--scope S]"
+	if code, done := parseFlags(fs, args, usage, stdout, stderr); done {
+		return code
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 2
 	}
 	path, err := devicelogin.DefaultPath("ward")
@@ -154,7 +164,7 @@ func runLogin(ctx context.Context, args []string, getenv func(string) string, no
 		return 0
 	}
 	if getenv("WARD_OIDC_ISSUER") == "" || getenv("WARD_OIDC_CLIENT_ID") == "" {
-		fmt.Fprintln(stderr, "usage: WARD_OIDC_ISSUER=... WARD_OIDC_CLIENT_ID=... ward login [--print] [--scope S]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 2
 	}
 	tok, err := devicelogin.Login(ctx, devicelogin.Config{Issuer: getenv("WARD_OIDC_ISSUER"), ClientID: getenv("WARD_OIDC_CLIENT_ID"), Scope: *scope,
