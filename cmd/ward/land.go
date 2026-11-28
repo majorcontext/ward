@@ -114,11 +114,11 @@ func runLand(ctx context.Context, args []string, getenv func(string) string, now
 	}
 	base := *baseFlag
 	if base == "" {
-		if exec.CommandContext(ctx, "git", "-C", *dir, "rev-parse", "--git-dir").Run() != nil {
-			fmt.Fprintln(stderr, "ward land: no git working tree in "+*dir+": the server finds the base")
-		} else if base, err = mergeBase(ctx, *dir, *remote, branch, *ref); err != nil {
-			fmt.Fprintln(stderr, "ward land:", err)
-			return 2
+		if exec.CommandContext(ctx, "git", "-C", *dir, "rev-parse", "--git-dir").Run() == nil {
+			if base, err = mergeBase(ctx, *dir, *remote, branch, *ref); err != nil {
+				fmt.Fprintln(stderr, "ward land:", err)
+				return 2
+			}
 		}
 	}
 	c := &landClient{base: strings.TrimRight(getenv("WARD_URL"), "/"), tok: tok}

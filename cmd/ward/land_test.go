@@ -345,6 +345,11 @@ func TestLandCommandPrintsTheCommitMappingAndFailsOnConflict(t *testing.T) {
 	if code, _, errOut := run("--bogus", h.repo, "feature/bad"); code != 2 {
 		t.Fatalf("usage error: exit %d, %s", code, errOut)
 	}
+	h.branchFrom(base, "feature/nogit", "d.txt", "d\n")
+	if code, out, errOut := run("-C", t.TempDir(), h.repo, "feature/nogit"); code != 0 || errOut != "" || !strings.HasPrefix(out, "landed") {
+		t.Fatalf("land without a git tree: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+
 	env["WARD_KEY_FILE"] = ""
 	if code, _, errOut := run("-C", h.work, h.repo, "feature/bad"); code != 2 || !slices.Contains(strings.Fields(errOut), "WARD_TOKEN,") {
 		t.Fatalf("no credential: exit %d, %s", code, errOut)
