@@ -35,6 +35,7 @@ Non-goals:
 | `internal/telemetry` | OTLP export of traces and metrics. | W2 |
 | `majorcontext/tools` (`tool` directives of `go.mod`) | Repository tooling that ward shares with other repositories and runs with `go tool`: `leaklint` (denylist scan), `testtime` (test time budget, enforced in CI's reference environment, not in the land check) and `lint` (the analyzers `wallclock` and `paralleltests`). The files `testdata/test-time-budget.txt` and `testdata/serial-tests.txt` stay in this repository. | W1 |
 | `images/ward`, `charts/ward`, `.github/workflows/image.yml` | Container image, Helm chart and image release (see Release). | W3 |
+| `internal/release`, `.github/workflows/release.yml` | Release of the `ward` command-line binary (see Release). | W3 |
 | Change requests, review, merge queue, CI orchestration, import host | See Planned work. | Not built |
 
 ward imports the public packages of motte: `api` (wire types), `grant` (to sign the grants that ward sends to motte) and `client` (the HTTP client). It never imports an internal package of motte. Tests also import `testserver` and `meta` of motte.
@@ -489,6 +490,8 @@ Contract tests land through a real motte and a fake runner that the test drives.
 
 The image `ghcr.io/majorcontext/ward` is built from `images/ward/Dockerfile`: a static binary (`CGO_ENABLED=0`) on a `debian:bookworm-slim` base that is pinned by digest, with `git` and CA certificates, and it runs as the non-root user 65532. The mirror runs the `git` binary, and a distroless static base has none. The workflow `.github/workflows/image.yml` builds and pushes it for `linux/amd64` and `linux/arm64` on a tag `v*`, with the tag as the version in the binary.
 
+The workflow `.github/workflows/release.yml` publishes the binary on a tag `v*`. It runs `go run ./internal/release/cmd/release build -version TAG -out dist`, which cross-compiles `./cmd/ward` with `CGO_ENABLED=0 GOOS=linux -trimpath` for `amd64` and `arm64`, with `-X main.version=TAG`, so `ward version` prints the tag. The command writes `ward-linux-amd64`, `ward-linux-arm64` and `SHA256SUMS`, which lists the sha256 digest of each binary in the format of `sha256sum -c`. Then `release publish -dir dist -tag TAG` sends the files through the seam `publish.Publisher`; the default destination `github` creates the GitHub release of the tag when it is absent and uploads the three files to it, replacing files of the same names. A box that needs `ward` downloads the asset of its architecture and checks it against `SHA256SUMS`, and compiles nothing. A tag publishes the image, the chart check and the binary as three separate workflows.
+
 The chart `charts/ward` runs one replica with the strategy `Recreate`, because the SQLite state store has a single writer. A PersistentVolumeClaim holds `WARD_DATA_DIR`. The chart mounts the motte signing key, the hook secret and the credential of each mirror (a token file, or a GitHub App key) as files from Kubernetes Secrets. `WARD_MIRRORS` comes from the values. Liveness uses `/health` and readiness uses `/ready`. The CI job `chart` lints the chart and renders it with each file of `charts/ward/ci/`.
 
 ## Provider seams
@@ -506,6 +509,7 @@ Every external provider sits behind an interface that its consumer owns. A provi
 | mirror-store | `internal/mirror.Store` | `internal/mirror/mirrortest.Run` | `internal/state/sqlite`, `internal/state/memory` | |
 | mirror-remote | `internal/gitremote.Remote` | `internal/gitremote/remotetest.Run` | `internal/gitremote/gitbin`, `internal/gitremote/fakeremote` | |
 | mirror-remote-credential | `internal/gitcred.Credential` | `internal/gitcred/credtest.Run` | `internal/gitcred/passwordfile`, `internal/gitcred/forgeapp` | |
+| release-publisher | `internal/release/publish.Publisher` | `internal/release/publish/publishtest.Run` | `internal/release/publish/dir`, `internal/release/publish/github` | |
 
 - A cell that names Go code is `dir.Identifier`: the directory is relative to the module root.
 - A row whose Gap cell starts with `Contract:` documents a contract of the machine with no code interface. It is not a gap, so it is not in `testdata/seam-gaps.txt`, and it needs no suite and no implementation.
