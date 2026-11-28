@@ -38,18 +38,9 @@ var sharedMotte *testserver.Server
 // mainTB lets testserver start a server for the whole package: it has no test to hold the cleanup.
 type mainTB struct {
 	testing.TB
-	dir string
 }
 
 func (mainTB) Helper() {}
-
-func (b mainTB) TempDir() string {
-	d, err := os.MkdirTemp(b.dir, "motte")
-	if err != nil {
-		panic(err)
-	}
-	return d
-}
 
 func (mainTB) Cleanup(func()) {}
 
@@ -115,7 +106,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	sharedMotte = startMotte(mainTB{dir: dir})
+	sharedMotte = startMotte(mainTB{})
 	askpassBin = filepath.Join(dir, "askpass")
 	if err := os.WriteFile(askpassBin, []byte(askpassScript), 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
